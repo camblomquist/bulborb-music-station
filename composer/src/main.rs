@@ -1,4 +1,4 @@
-use crate::{bms::BmsData, conductor::RawConductor, trackmap::RawTrackMap};
+use crate::{bms::Bms, conductor::RawConductor, trackmap::RawTrackMap};
 
 mod bms;
 mod conductor;
@@ -15,6 +15,14 @@ fn main() {
     // let trackmaps = RawTrackMap::from_file("trackMap_Seq_T.txt");
     // println!("{:?}", trackmaps);
 
-    let timetables = BmsData::from_file("new_05.bms").get_timetables();
-    println!("{:?}", timetables);
+    // let timetables = Bms::from_file("new_05.bms").parse_timetables();
+    // println!("{:?}", timetables);
+
+    let gesture_sets = Bms::from_file("new_05.bms").parse_gesture_sets();
+    for (i, set) in gesture_sets.iter().enumerate() {
+        println!("Set {}", i);
+        for gesture in &set.0 {
+            println!("  {:?}", gesture);
+        }
+    }
 }
