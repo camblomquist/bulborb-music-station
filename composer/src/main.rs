@@ -15,14 +15,12 @@ fn main() {
     // let trackmaps = RawTrackMap::from_file("trackMap_Seq_T.txt");
     // println!("{:?}", trackmaps);
 
-    // let timetables = Bms::from_file("new_05.bms").parse_timetables();
-    // println!("{:?}", timetables);
-
-    let gesture_sets = Bms::from_file("new_05.bms").parse_gesture_sets();
-    for (i, set) in gesture_sets.iter().enumerate() {
+    let bms = Bms::from_file("new_05.bms");
+    for (i, set) in bms.gesture_sets.iter().enumerate() {
         println!("Set {}", i);
         for gesture in &set.0 {
             println!("  {:?}", gesture);
         }
     }
+    println!("{:?}", bms.timetables);
 }

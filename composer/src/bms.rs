@@ -5,7 +5,11 @@ const LIST_SENTINEL: [u8; 3] = [0xFF, 0xFF, 0xFF];
 const GESTURE_SET_LIST_ADDRESS_LOCATION: usize = 0x6;
 const TIMETABLE_LIST_ADDRESS_LOCATION: usize = 0x14;
 
-pub struct Bms(Vec<u8>);
+#[derive(Debug)]
+pub struct Bms {
+    pub gesture_sets: Vec<RawGestureSet>,
+    pub timetables: Vec<RawTimetable>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BmsInstruction {
@@ -38,17 +42,32 @@ pub struct RawGesture(pub Vec<BmsInstruction>);
 #[derive(Debug)]
 pub struct RawTimetable(pub Vec<u16>);
 
-struct BmsState {
+struct BmsParser<'a> {
+    data: &'a [u8],
     pos: usize,
 }
 
 impl Bms {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Self {
         let data = fs::read(path).unwrap();
-        Self(data)
+        let parser = BmsParser::new(&data, 0);
+
+        let gesture_sets = parser.parse_gesture_sets();
+        let timetables = parser.parse_timetables();
+
+        Self {
+            gesture_sets,
+            timetables,
+        }
+    }
+}
+
+impl<'a> BmsParser<'a> {
+    fn new(data: &'a [u8], pos: usize) -> Self {
+        Self { data, pos }
     }
 
-    pub fn parse_gesture_sets(&self) -> Vec<RawGestureSet> {
+    fn parse_gesture_sets(&self) -> Vec<RawGestureSet> {
         let address = self.parse_list_location(GESTURE_SET_LIST_ADDRESS_LOCATION);
         let set_locations = self.iter_address_list(address);
         let gesture_locations = set_locations.map(|address| self.iter_address_list(address));
@@ -58,14 +77,27 @@ impl Bms {
             .collect()
     }
 
-    pub fn parse_timetables(&self) -> Vec<RawTimetable> {
+    fn parse_gesture(&self, address: usize) -> RawGesture {
+        let mut instructions = Vec::new();
+
+        let mut parser = Self::new(self.data, address);
+        let mut next = parser.parse_instruction();
+        while next != BmsInstruction::Finish {
+            instructions.push(next);
+            next = parser.parse_instruction();
+        }
+
+        RawGesture(instructions)
+    }
+
+    fn parse_timetables(&self) -> Vec<RawTimetable> {
         let address = self.parse_list_location(TIMETABLE_LIST_ADDRESS_LOCATION);
         let timetable_locations = self.iter_address_list(address);
 
         timetable_locations
             .map(|address| {
                 RawTimetable(
-                    self.0[(address as _)..]
+                    self.data[(address as _)..]
                         .as_chunks()
                         .0
                         .iter()
@@ -77,41 +109,14 @@ impl Bms {
             .collect()
     }
 
-    fn parse_gesture(&self, address: usize) -> RawGesture {
-        let mut instructions = Vec::new();
-
-        let mut state = BmsState { pos: address };
-        let mut next = self.parse_instruction(&mut state);
-        while next != BmsInstruction::Finish {
-            instructions.push(next);
-            next = self.parse_instruction(&mut state);
-        }
-
-        RawGesture(instructions)
-    }
-
-    fn parse_list_location(&self, address: usize) -> usize {
-        let slice = &self.0[address..];
-        assert!(slice.len() >= mem::size_of::<u16>());
-        let address = unsafe { slice.first_chunk().unwrap_unchecked() };
-        u16::from_be_bytes(*address) as _
-    }
-
-    fn iter_address_list(&self, address: usize) -> impl Iterator<Item = usize> {
-        let chunks = self.0[address..].as_chunks().0.iter();
-        chunks
-            .take_while(|&&x| x != LIST_SENTINEL)
-            .map(|&[x, y, z]| u32::from_be_bytes([0, x, y, z]) as _)
-    }
-
-    fn parse_instruction(&self, state: &mut BmsState) -> BmsInstruction {
+    fn parse_instruction(&mut self) -> BmsInstruction {
         use opcodes::*;
 
-        let opcode = self.read_u8(state);
+        let opcode = self.read_u8();
         match opcode {
             NOTE_ON_BEGIN..=NOTE_ON_END => {
                 let note = opcode;
-                let flags = self.read_u8(state);
+                let flags = self.read_u8();
                 let voice = flags & 0x7;
                 let extended_flags = (flags >> 5) & 0x3;
 
@@ -127,7 +132,7 @@ impl Bms {
                     panic!("NoteOn Unhandled Flag: GateOn");
                 }
 
-                let velocity = self.read_u8(state);
+                let velocity = self.read_u8();
                 if velocity & 0x80 != 0 {
                     panic!("NoteOn Unhandled Flag: Velocity from Register");
                 }
@@ -135,13 +140,13 @@ impl Bms {
                 let duration = if voice == 0 {
                     // This byte is used as a factor to get Dsp Time from Seq Time
                     // We shouldn't need to care about this?
-                    self.read_u8(state);
+                    self.read_u8();
 
                     let count = (flags >> 3) & 0x3;
                     match count {
                         0 => panic!("NoteOn without duration"),
-                        1 => NonZeroU32::new(self.read_u8(state) as _),
-                        2 => NonZeroU32::new(self.read_u16(state) as _),
+                        1 => NonZeroU32::new(self.read_u8() as _),
+                        2 => NonZeroU32::new(self.read_u16() as _),
                         3 => panic!("NoteOn Unhandled Flag: 24 byte sequence time"),
                         _ => unreachable!(),
                     }
@@ -163,7 +168,7 @@ impl Bms {
             NOTE_OFF_BEGIN..=NOTE_OFF_END => {
                 let voice = opcode & 0x7;
                 let release = if opcode & 0x08 != 0 {
-                    let rel = self.read_u8(state);
+                    let rel = self.read_u8();
                     if rel > 100 { (rel - 98) * 20 } else { rel }
                 } else {
                     0
@@ -171,16 +176,16 @@ impl Bms {
                 BmsInstruction::NoteOff { voice, release }
             }
             CMD_WAIT8 => {
-                let duration = self.read_u8(state) as u16;
+                let duration = self.read_u8() as u16;
                 BmsInstruction::Wait { duration }
             }
             CMD_WAIT16 => {
-                let duration = self.read_u16(state);
+                let duration = self.read_u16();
                 BmsInstruction::Wait { duration }
             }
             CALL => {
-                let condition = self.read_u8(state);
-                let address = self.read_u24(state);
+                let condition = self.read_u8();
+                let address = self.read_u24();
                 BmsInstruction::Call { condition, address }
             }
             FINISH => BmsInstruction::Finish,
@@ -188,23 +193,37 @@ impl Bms {
         }
     }
 
-    fn read_u8(&self, state: &mut BmsState) -> u8 {
-        let ret = self.0[state.pos];
-        state.pos += 1;
+    fn parse_list_location(&self, address: usize) -> usize {
+        let slice = &self.data[address..];
+        assert!(slice.len() >= mem::size_of::<u16>());
+        let address = unsafe { slice.first_chunk().unwrap_unchecked() };
+        u16::from_be_bytes(*address) as _
+    }
+
+    fn iter_address_list(&self, address: usize) -> impl Iterator<Item = usize> {
+        let chunks = self.data[address..].as_chunks().0.iter();
+        chunks
+            .take_while(|&&x| x != LIST_SENTINEL)
+            .map(|&[x, y, z]| u32::from_be_bytes([0, x, y, z]) as _)
+    }
+
+    fn read_u8(&mut self) -> u8 {
+        let ret = self.data[self.pos];
+        self.pos += 1;
         ret
     }
 
-    fn read_u16(&self, state: &mut BmsState) -> u16 {
-        let bytes = self.0[state.pos..state.pos + 2].try_into().unwrap();
+    fn read_u16(&mut self) -> u16 {
+        let bytes = self.data[self.pos..self.pos + 2].try_into().unwrap();
         let ret = u16::from_be_bytes(bytes);
-        state.pos += 2;
+        self.pos += 2;
         ret
     }
 
-    fn read_u24(&self, state: &mut BmsState) -> u32 {
-        let bytes = &self.0[state.pos..state.pos + 3];
+    fn read_u24(&mut self) -> u32 {
+        let bytes = &self.data[self.pos..self.pos + 3];
         let ret = u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]);
-        state.pos += 3;
+        self.pos += 3;
         ret
     }
 }
