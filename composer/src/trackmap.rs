@@ -28,7 +28,7 @@ impl RawTrackMap {
                     .trim_ascii()
             })
             .filter(|line| !(line.is_empty() || line[0] == '{' as _ || line[0] == '}' as _))
-            .map(|line| unsafe { str::from_utf8_unchecked(line) });
+            .map(|line| str::from_utf8(line).unwrap());
 
         while let Some(line) = lines.next()
             && line != "endoffile"
