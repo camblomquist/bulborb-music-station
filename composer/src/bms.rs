@@ -11,7 +11,7 @@ pub struct Bms {
     pub timetables: Vec<RawTimetable>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BmsInstruction {
     NoteOn {
         voice: u8,
@@ -25,6 +25,11 @@ pub enum BmsInstruction {
     },
     Wait {
         duration: u16,
+    },
+    SetParam {
+        param: ParamType,
+        value: f32,
+        time: Option<NonZeroU32>,
     },
     Call {
         condition: u8,
@@ -45,6 +50,11 @@ pub struct RawTimetable(pub Vec<u16>);
 struct BmsParser<'a> {
     data: &'a [u8],
     pos: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamType {
+    Volume = 0,
 }
 
 impl Bms {
@@ -112,6 +122,8 @@ impl<'a> BmsParser<'a> {
     fn parse_instruction(&mut self) -> BmsInstruction {
         use opcodes::*;
 
+        // Original decoder does some fancy bitmasking to multiplex opcodes
+        // We are lazy and will just match on the opcode, code duplication be damned
         let opcode = self.read_u8();
         match opcode {
             NOTE_ON_BEGIN..=NOTE_ON_END => {
@@ -183,6 +195,30 @@ impl<'a> BmsParser<'a> {
                 let duration = self.read_u16();
                 BmsInstruction::Wait { duration }
             }
+            PARAM_S16_NODUR => {
+                let param = self.read_u8();
+                let param = match param {
+                    x if x == ParamType::Volume as u8 => ParamType::Volume,
+                    _ => panic!("SetParam Unhandled Param: {}", param),
+                };
+
+                let value = self.read_i16() as f32 / 32767.0;
+                let time = None;
+
+                BmsInstruction::SetParam { param, value, time }
+            }
+            PARAM_S16_DUR_U8 => {
+                let param = self.read_u8();
+                let param = match param {
+                    x if x == ParamType::Volume as u8 => ParamType::Volume,
+                    _ => panic!("SetParam Unhandled Param: {}", param),
+                };
+
+                let value = self.read_i16() as f32 / 32767.0;
+                let time = NonZeroU32::new(self.read_u8() as _);
+
+                BmsInstruction::SetParam { param, value, time }
+            }
             CALL => {
                 let condition = self.read_u8();
                 let address = self.read_u24();
@@ -220,6 +256,10 @@ impl<'a> BmsParser<'a> {
         ret
     }
 
+    fn read_i16(&mut self) -> i16 {
+        self.read_u16() as _
+    }
+
     fn read_u24(&mut self) -> u32 {
         let bytes = &self.data[self.pos..self.pos + 3];
         let ret = u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]);
@@ -236,13 +276,15 @@ mod opcodes {
     }
 
     opcodes! {
-        NOTE_ON_BEGIN  = 0x00,
-        NOTE_ON_END    = 0x79,
-        CMD_WAIT8      = 0x80,
-        NOTE_OFF_BEGIN = 0x81,
-        NOTE_OFF_END   = 0x87,
-        CMD_WAIT16     = 0x88,
-        CALL           = 0xC4,
-        FINISH         = 0xFF,
+        NOTE_ON_BEGIN    = 0x00,
+        NOTE_ON_END      = 0x79,
+        CMD_WAIT8        = 0x80,
+        NOTE_OFF_BEGIN   = 0x81,
+        NOTE_OFF_END     = 0x87,
+        CMD_WAIT16       = 0x88,
+        PARAM_S16_NODUR  = 0x9C,
+        PARAM_S16_DUR_U8 = 0x9E,
+        CALL             = 0xC4,
+        FINISH           = 0xFF,
     }
 }
