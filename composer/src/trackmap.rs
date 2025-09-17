@@ -1,3 +1,4 @@
+use std::array;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -36,24 +37,21 @@ impl RawTrackMap {
             let name = line.to_string();
 
             let mut mixes = lines.by_ref().take(6).map(|line| line.parse().unwrap());
-            let mut mix_track_counts = [0; 6];
-            mix_track_counts.fill_with(|| mixes.next().unwrap());
+            let mix_track_counts = array::from_fn(|_| mixes.next().unwrap());
 
             let mut skips = lines
                 .by_ref()
                 .take(4)
                 .flat_map(|line| line.split_ascii_whitespace())
                 .map(|x| x == "1");
-            let mut skip_tracks = [false; 16];
-            skip_tracks.fill_with(|| skips.next().unwrap());
+            let skip_tracks = array::from_fn(|_| skips.next().unwrap());
 
             let mut skips = lines
                 .by_ref()
                 .take(2)
                 .flat_map(|line| line.split_ascii_whitespace())
                 .map(|x| x == "1");
-            let mut skip_notes = [false; 8];
-            skip_notes.fill_with(|| skips.next().unwrap());
+            let skip_notes = array::from_fn(|_| skips.next().unwrap());
 
             trackmaps.insert(
                 name.clone(),
