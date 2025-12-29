@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{Read, Seek};
 use std::path::Path;
 
+use byteorder::{BigEndian, ReadBytesExt};
+
 #[derive(Debug)]
 pub struct RawConductor {
     pub swing_time: u8,
@@ -13,21 +15,28 @@ pub struct RawConductor {
 #[derive(Debug)]
 pub struct RawConductorTrack {
     pub text: [u8; 8],
-    pub initial_delay: u8,
-    pub eighth_delay_b: bool,
-    pub eighth_delay_q: bool,
-    pub track_copy: u8,
+    pub initial_delay: i16,
+    pub eighth_delay: bool,
+    pub unison_track: u8,
     pub echo: u8,
+    pub module: RawConductorModule,
+}
+
+// A Track has modules as children which define most of the parameters
+// There can theoretically be multiple modules but in practice, a track only has one
+#[derive(Debug)]
+pub struct RawConductorModule {
     pub in_order: bool,
     pub bank: u8,
     pub program: u8,
-    pub gesture_set: u8,
-    pub ruleset: u8,
-    pub gesture_count: u8,
-    pub silent_count: u8,
-    pub transposition: i8,
+    pub gesture_set: u16,
+    pub timing_ruleset: u16,
+    pub on_cycles: u16,
+    pub off_cycles: u16,
+    pub transposition: i16,
     pub volume: u8,
-    pub panning: i8,
+    pub panning: u8,
+    pub eighth_delay: bool,
 }
 
 impl RawConductor {
@@ -66,63 +75,68 @@ impl RawConductorTrack {
     }
 
     fn from_file(file: &mut File) -> Self {
-        // Two bytes before the first value here is a non-zero value. Seems to always be 0x01
+        // The first value here is the number of modules associated with the track
+        // Since this is always 1, we ignore it
 
-        // Copying bjorn's homework because this is so much nicer than reading byte-by-byte
-        let mut buf = [0; 2];
-        file.read_exact(&mut buf).unwrap();
-        let [initial_delay, eighth_delay_b] = buf;
+        let initial_delay = file.read_i16::<BigEndian>().unwrap();
+        let eighth_delay = file.read_u8().unwrap();
 
         let mut buf = [0; 8];
         file.read_exact(&mut buf).unwrap();
         let text = buf;
 
-        let mut buf = [0; 2];
-        file.read_exact(&mut buf).unwrap();
-        let [track_copy, echo] = buf;
+        let unison_track = file.read_u8().unwrap();
+        let echo = file.read_u8().unwrap();
 
-        // Skip mostly empty space
-        // Two bytes before this value is another non-zero value. Seems to always be 0x40
-        file.seek_relative(8).unwrap();
+        // Skip empty space between track and module
+        file.seek_relative(3).unwrap();
 
-        let mut buf = [0; 15];
-        file.read_exact(&mut buf).unwrap();
-
-        let [
-            in_order,
-            bank,
-            program,
-            _,
-            gesture_set,
-            _,
-            ruleset,
-            gesture_count,
-            silent_count,
-            _,
-            transposition,
-            volume,
-            panning,
-            eighth_delay_q,
-            _,
-        ] = buf;
+        let module = RawConductorModule::from_file(file);
 
         Self {
             text,
             initial_delay,
-            eighth_delay_b: eighth_delay_b == 1,
-            eighth_delay_q: eighth_delay_q == 1,
-            track_copy,
+            eighth_delay: eighth_delay == 1,
+            unison_track,
             echo,
+            module,
+        }
+    }
+}
+
+impl RawConductorModule {
+    fn from_file(file: &mut File) -> Self {
+        // Skip the first five bytes
+        // These correspond to
+        // - an unused delay (i16)
+        // - an unknown i16 that is always set to 0x40
+        // - an unknown u8 that appears to always be 0
+        file.seek_relative(5).unwrap();
+
+        let in_order = file.read_u8().unwrap();
+        let bank = file.read_u8().unwrap();
+        let program = file.read_u8().unwrap();
+        let gesture_set = file.read_u16::<BigEndian>().unwrap();
+        let timing_ruleset = file.read_u16::<BigEndian>().unwrap();
+        let on_cycles = file.read_u16::<BigEndian>().unwrap();
+        let off_cycles = file.read_u16::<BigEndian>().unwrap();
+        let transposition = file.read_i16::<BigEndian>().unwrap();
+        let volume = file.read_u8().unwrap();
+        let panning = file.read_u8().unwrap();
+        let eighth_delay = file.read_u8().unwrap();
+
+        Self {
             in_order: in_order == 1,
             bank,
             program,
             gesture_set,
-            ruleset,
-            gesture_count,
-            silent_count,
-            transposition: transposition as i8,
+            timing_ruleset,
+            on_cycles,
+            off_cycles,
+            transposition,
             volume,
-            panning: panning as i8 - 64,
+            panning,
+            eighth_delay: eighth_delay == 1,
         }
     }
 }

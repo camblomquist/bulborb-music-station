@@ -3,4 +3,10 @@ resolver = "3"
 members = ["composer", "player", "common"]
 
 [workspace.dependencies]
+byteorder = "1.5.0"
 common = { version = "0.1.0", path = "./common" }
+
+[workspace.dependencies.midly]
+version = "0.5.3"
+default-features = false
+features = ["std"]
