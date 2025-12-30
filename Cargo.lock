@@ -13,7 +13,6 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "midly",
- "riff",
 ]
 
 [[package]]
@@ -34,9 +33,3 @@ checksum = "207d755f4cb882d20c4da58d707ca9130a0c9bc5061f657a4f299b8e36362b7a"
 [[package]]
 name = "player"
 version = "0.1.0"
-
-[[package]]
-name = "riff"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c601484456988d75017d86700d3743b949c21cdc7399f940c75e34680d185c5"
