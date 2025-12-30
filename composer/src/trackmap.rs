@@ -1,17 +1,22 @@
 use std::array;
 use std::collections::BTreeMap;
+use std::ops::Index;
 use std::path::Path;
 
 #[derive(Debug)]
-pub struct RawTrackMap {
-    name: String,
-    mix_track_counts: [u8; 6],
-    skip_tracks: [bool; 16],
-    skip_notes: [bool; 8],
+
+pub struct RawTrackMap(BTreeMap<String, RawTrackMapEntry>);
+
+#[derive(Debug)]
+pub struct RawTrackMapEntry {
+    pub name: String,
+    pub mix_track_counts: [u8; 6],
+    pub skip_tracks: [bool; 16],
+    pub skip_notes: [bool; 8],
 }
 
 impl RawTrackMap {
-    pub fn from_file<P: AsRef<Path>>(path: P) -> BTreeMap<String, RawTrackMap> {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> RawTrackMap {
         let mut trackmaps = BTreeMap::new();
 
         // File is Shift JIS which isn't valid UTF-8
@@ -55,7 +60,7 @@ impl RawTrackMap {
 
             trackmaps.insert(
                 name.clone(),
-                RawTrackMap {
+                RawTrackMapEntry {
                     name,
                     mix_track_counts,
                     skip_tracks,
@@ -63,6 +68,13 @@ impl RawTrackMap {
                 },
             );
         }
-        trackmaps
+        RawTrackMap(trackmaps)
+    }
+}
+
+impl Index<&str> for RawTrackMap {
+    type Output = RawTrackMapEntry;
+    fn index(&self, key: &str) -> &Self::Output {
+        &self.0[key]
     }
 }
