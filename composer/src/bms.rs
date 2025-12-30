@@ -97,6 +97,8 @@ impl<'a> BmsParser<'a> {
             next = parser.parse_instruction();
         }
 
+        instructions.push(BmsInstruction::Finish);
+
         RawGesture(instructions)
     }
 
