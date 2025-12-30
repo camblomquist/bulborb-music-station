@@ -21,14 +21,14 @@ impl RawTrackMap {
         // Hate this entire thing but it doesn't really need to be any nicer to function
 
         let mut lines = data
-            .split_inclusive(|&x| x == '\n' as _)
+            .split_inclusive(|&x| x == b'\n')
             .map(|line| unsafe {
-                line.split(|&x| x == '#' as _)
+                line.split(|&x| x == b'#')
                     .next()
                     .unwrap_unchecked()
                     .trim_ascii()
             })
-            .filter(|line| !(line.is_empty() || line[0] == '{' as _ || line[0] == '}' as _))
+            .filter(|line| !(line.is_empty() || line[0] == b'{' || line[0] == b'}'))
             .map(|line| str::from_utf8(line).unwrap());
 
         while let Some(line) = lines.next()
