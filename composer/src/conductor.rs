@@ -18,7 +18,7 @@ pub struct RawConductorTrack {
     pub initial_delay: i16,
     pub eighth_delay: bool,
     pub unison_track: u8,
-    pub echo: u8,
+    pub echo: u8, // This appears to be effectively unused?
     pub module: RawConductorModule,
 }
 
