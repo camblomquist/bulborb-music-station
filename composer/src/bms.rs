@@ -1,4 +1,6 @@
-use std::{fs, mem, num::NonZeroU32, ops::Index, path::Path, slice::SliceIndex};
+use std::{fs, mem, num::NonZeroU32, path::Path};
+
+use midly::num::u7;
 
 const LIST_SENTINEL: [u8; 3] = [0xFF, 0xFF, 0xFF];
 
@@ -55,6 +57,19 @@ struct BmsParser<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamType {
     Volume = 0,
+}
+
+impl ParamType {
+    pub const fn count() -> usize {
+        mem::variant_count::<Self>()
+    }
+
+    pub const fn controller(self) -> u7 {
+        let value = match self {
+            Self::Volume => 11,
+        };
+        u7::new(value)
+    }
 }
 
 impl Bms {
