@@ -1,7 +1,7 @@
 use std::ops::{Index, IndexMut};
 
 use crate::{
-    bms::{Bms, BmsInstruction, ParamType, RawGesture, RawGestureSet, RawTimetable},
+    bms::{Bms, BmsInstruction, BmsSubroutine, ParamType, RawGesture, RawGestureSet, RawTimetable},
     conductor::{RawConductor, RawConductorTrack},
     trackmap::{RawTrackMap, RawTrackMapEntry},
 };
@@ -14,8 +14,6 @@ use midly::{
 
 const NO_NOTE: u8 = 0xFF;
 const DEFAULT_VELOCITY: u7 = u7::new(64);
-
-const GESTURE_START_SUBROUTINE: u32 = 0x15D;
 
 pub struct RawComposition {
     pub name: String,
@@ -253,12 +251,17 @@ impl<'a> GestureParser<'a> {
                 }
                 BmsInstruction::Call {
                     condition: _,
-                    address,
+                    subroutine,
                 } => {
-                    // This should probably never be an issue but better safe than sorry
-                    match address {
-                        GESTURE_START_SUBROUTINE => (),
-                        _ => panic!("Unknown subroutine at address {:#X}", address),
+                    match subroutine {
+                        BmsSubroutine::GestureStart => {
+                            // TODO: Figure out what this needs to do
+                            // 15D outswitch 0x0
+                            // 15F param_set_8 0x8 1
+                            // 162 param_set_8 0x9 0
+                            // 165 param_set_8 0xA 1
+                            // 168 panswset 52 33 52
+                        }
                     }
                 }
                 BmsInstruction::Finish => {

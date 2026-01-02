@@ -35,9 +35,16 @@ pub enum BmsInstruction {
     },
     Call {
         condition: u8,
-        address: u32,
+        subroutine: BmsSubroutine,
     },
     Finish,
+}
+
+// Directly storing the address isn't useful to us since we can't execute the bytecode
+// Instead, we have a list of subroutines we know how to translate
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BmsSubroutine {
+    GestureStart = 0x15D,
 }
 
 #[derive(Debug)]
@@ -239,10 +246,21 @@ impl<'a> BmsParser<'a> {
             CALL => {
                 let condition = self.read_u8();
                 let address = self.read_u24();
-                BmsInstruction::Call { condition, address }
+                // This should probably never be an issue but better safe than sorry
+                match address {
+                    _ if address == BmsSubroutine::GestureStart as u32 => BmsInstruction::Call {
+                        condition,
+                        subroutine: BmsSubroutine::GestureStart,
+                    },
+                    _ => panic!("Unknown subroutine {:#X} at {:#X}", address, self.pos - 3),
+                }
             }
             FINISH => BmsInstruction::Finish,
-            _ => panic!("unknown opcode {:#2X}", opcode),
+            _ => panic!(
+                "unknown opcode {:#2X} at address {:#X}",
+                opcode,
+                self.pos - 1
+            ),
         }
     }
 
