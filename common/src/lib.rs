@@ -4,13 +4,18 @@ use midly;
 // For now just storing everything needed to play the composition
 // Can split into separate parts if it presents issues later
 pub struct Composition<'a> {
+    pub name: String,
     pub tempo: u8,
     pub swing_time: u8,
     pub skip_notes: [bool; 8], // PikMask from Track Map
-    pub tracks: Vec<Track>,
+    pub mixes: Vec<Mix>,
     pub timetables: Vec<Timetable>,
     pub gesture_sets: Vec<GestureSet<'a>>,
     pub instruments: (),
+}
+
+pub struct Mix {
+    pub tracks: Vec<Track>,
 }
 
 pub struct Track {
