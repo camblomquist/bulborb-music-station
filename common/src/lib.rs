@@ -9,13 +9,17 @@ pub struct Composition<'a> {
     pub swing_time: u8,
     pub skip_notes: [bool; 8], // PikMask from Track Map
     pub mixes: Vec<Mix>,
+    pub tracks: Vec<Track>,
     pub timetables: Vec<Timetable>,
     pub gesture_sets: Vec<GestureSet<'a>>,
     pub instruments: (),
 }
 
 pub struct Mix {
-    pub tracks: Vec<Track>,
+    // List of Track Indices associated with this mix
+    // TrackMap constrains this further for space savings
+    // There really isn't a good reason to do it this way instead
+    pub tracks: Vec<usize>,
 }
 
 pub struct Track {

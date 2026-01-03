@@ -37,16 +37,31 @@ impl RawComposition {
             tempo: conductor.bpm,
             swing_time: conductor.swing_time,
             skip_notes: trackmap.skip_notes,
-            mixes: convert_mixes(conductor.tracks, trackmap),
+            mixes: convert_mixes(trackmap),
+            tracks: convert_tracks(conductor.tracks, trackmap),
             timetables: convert_timetables(bms.timetables),
             gesture_sets: convert_gesture_sets(bms.gesture_sets),
             instruments: (),
         }
     }
 }
+fn convert_mixes(trackmap: &RawTrackMapEntry) -> Vec<Mix> {
+    let mut end = 0;
+    trackmap
+        .mix_track_counts
+        .into_iter()
+        .map(|count| {
+            let start = end;
+            end += count as usize;
+            Mix {
+                tracks: (start..end).collect(),
+            }
+        })
+        .collect()
+}
 
-fn convert_mixes(tracks: Vec<RawConductorTrack>, trackmap: &RawTrackMapEntry) -> Vec<Mix> {
-    let mut tracks = tracks
+fn convert_tracks(tracks: Vec<RawConductorTrack>, trackmap: &RawTrackMapEntry) -> Vec<Track> {
+    tracks
         .into_iter()
         .zip(trackmap.skip_tracks)
         .map(|(track, skippable)| {
@@ -79,12 +94,6 @@ fn convert_mixes(tracks: Vec<RawConductorTrack>, trackmap: &RawTrackMapEntry) ->
                 volume: track.module.volume,
                 panning: track.module.panning,
             }
-        });
-    trackmap
-        .mix_track_counts
-        .into_iter()
-        .map(|count| Mix {
-            tracks: tracks.by_ref().take(count as _).collect(),
         })
         .collect()
 }
