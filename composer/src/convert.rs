@@ -35,9 +35,10 @@ impl RawComposition {
         } = self;
 
         let trackmap = &trackmap[&name];
+        let tempo = (60_000_000.0 / conductor.bpm as f64) as _;
         Composition {
             name,
-            tempo: conductor.bpm,
+            tempo,
             swing_time: conductor.swing_time,
             skip_notes: trackmap.skip_notes,
             mixes: convert_mixes(trackmap),

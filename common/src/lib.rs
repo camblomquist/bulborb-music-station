@@ -3,9 +3,10 @@ use midly;
 // A single composition
 // For now just storing everything needed to play the composition
 // Can split into separate parts if it presents issues later
+#[derive(Debug)]
 pub struct Composition<'a> {
     pub name: String,
-    pub tempo: u8,
+    pub tempo: u32,
     pub swing_time: u8,
     pub skip_notes: [bool; 8], // PikMask from Track Map
     pub mixes: Vec<Mix>,
@@ -15,6 +16,7 @@ pub struct Composition<'a> {
     pub instruments: (),
 }
 
+#[derive(Debug)]
 pub struct Mix {
     // List of Track Indices associated with this mix
     // TrackMap constrains this further for space savings
@@ -22,6 +24,7 @@ pub struct Mix {
     pub tracks: Vec<usize>,
 }
 
+#[derive(Debug)]
 pub struct Track {
     pub title: String,
     pub bank: u32,
@@ -33,13 +36,14 @@ pub struct Track {
     pub in_order: bool,
     pub gesture_set: usize,
     pub timetable: usize,
-    pub on_cycles: u16,
-    pub off_cycles: u16,
+    pub on_cycles: u8,
+    pub off_cycles: u8,
     pub transposition: i16,
     pub volume: u8,
     pub panning: u8,
 }
 
+#[derive(Debug)]
 pub struct Timing(u16);
 
 pub type Timetable = Vec<Timing>;

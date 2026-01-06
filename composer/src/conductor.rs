@@ -31,8 +31,8 @@ pub struct RawConductorModule {
     pub program: u8,
     pub gesture_set: u16,
     pub timing_ruleset: u16,
-    pub on_cycles: u16,
-    pub off_cycles: u16,
+    pub on_cycles: u8,
+    pub off_cycles: u8,
     pub transposition: i16,
     pub volume: u8,
     pub panning: u8,
@@ -51,7 +51,7 @@ impl RawConductor {
 
         let tracks = (0..count)
             .map(|_| {
-                file.seek_relative(25).unwrap();
+                file.seek_relative(23).unwrap();
                 RawConductorTrack::from_file(&mut file)
             })
             .collect();
@@ -77,6 +77,7 @@ impl RawConductorTrack {
     fn from_file(file: &mut File) -> Self {
         // The first value here is the number of modules associated with the track
         // Since this is always 1, we ignore it
+        let _ = file.read_u8().unwrap();
 
         let initial_delay = file.read_i16::<BigEndian>().unwrap();
         let eighth_delay = file.read_u8().unwrap();
@@ -118,12 +119,16 @@ impl RawConductorModule {
         let program = file.read_u8().unwrap();
         let gesture_set = file.read_u16::<BigEndian>().unwrap();
         let timing_ruleset = file.read_u16::<BigEndian>().unwrap();
-        let on_cycles = file.read_u16::<BigEndian>().unwrap();
-        let off_cycles = file.read_u16::<BigEndian>().unwrap();
+        let on_cycles = file.read_u8().unwrap();
+        let off_cycles = file.read_u8().unwrap();
         let transposition = file.read_i16::<BigEndian>().unwrap();
         let volume = file.read_u8().unwrap();
         let panning = file.read_u8().unwrap();
         let eighth_delay = file.read_u8().unwrap();
+
+        // The original parser skipped more than this
+        // We only need to skip the one byte to align us for the next track
+        file.seek_relative(1).unwrap();
 
         Self {
             in_order: in_order == 1,
