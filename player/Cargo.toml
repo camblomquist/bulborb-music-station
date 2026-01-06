@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+common = { workspace = true }
+cpal = "0.17.0"
+midly = { workspace = true }
+oxisynth = "0.1.0"
+ringbuf = "0.4.8"
+
+# Temporary
+composer = { version = "0.1.0", path = "../composer" }
