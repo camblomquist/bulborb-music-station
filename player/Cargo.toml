@@ -5,11 +5,15 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-common = { workspace = true }
-cpal = "0.17.0"
+bms-common = { workspace = true }
 midly = { workspace = true }
 oxisynth = "0.1.0"
 ringbuf = "0.4.8"
+tinyaudio = "2.0.0"
 
 # Temporary
-composer = { version = "0.1.0", path = "../composer" }
+bms-composer = { version = "0.1.0", path = "../composer" }
+
+[dependencies.rand]
+version = "0.9"
+features = ["small_rng"]

@@ -9,7 +9,7 @@ use crate::{
     trackmap::{RawTrackMap, RawTrackMapEntry},
 };
 
-use common::{Composition, Gesture, GestureSet, Mix, Timetable, Timing, Track};
+use bms_common::{Composition, CompositionTrack, Gesture, GestureSet, Mix, Timetable, Timing};
 use midly::{
     MetaMessage, MidiMessage, TrackEvent, TrackEventKind,
     num::{u4, u7},
@@ -17,6 +17,8 @@ use midly::{
 
 const NO_NOTE: u8 = 0xFF;
 const DEFAULT_VELOCITY: u7 = u7::new(64);
+
+// const PPQ: u16 = 120;
 
 pub struct RawComposition {
     pub name: String,
@@ -64,37 +66,42 @@ fn convert_mixes(trackmap: &RawTrackMapEntry) -> Vec<Mix> {
         .collect()
 }
 
-fn convert_tracks(tracks: Vec<RawConductorTrack>, trackmap: &RawTrackMapEntry) -> Vec<Track> {
+fn convert_tracks(
+    tracks: Vec<RawConductorTrack>,
+    trackmap: &RawTrackMapEntry,
+) -> Vec<CompositionTrack> {
     tracks
         .into_iter()
         .zip(trackmap.skip_tracks)
         .map(|(track, skippable)| {
             let title = String::from(track.title());
             let unison_track = if track.unison_track != 16 {
-                Some(track.unison_track)
+                Some(track.unison_track as usize)
             } else {
                 None
             };
+            // Convert beats to clock ticks
+            let initial_delay = track.initial_delay as u32 * 120;
             // Based on how JAS interprets the eighthDelay, it should be OK to combine them
             let extra_delay = match (track.eighth_delay, track.module.eighth_delay) {
                 (true, true) => 120,
                 (false, false) => 0,
                 _ => 60,
             };
-            Track {
+            CompositionTrack {
                 title,
                 bank: track.module.bank as _,
                 program: track.module.program,
                 skippable,
                 unison_track,
-                initial_delay: track.initial_delay as _,
+                initial_delay,
                 extra_delay,
                 in_order: track.module.in_order,
                 gesture_set: track.module.gesture_set as _,
                 timetable: track.module.timing_ruleset as _,
-                on_cycles: track.module.on_cycles,
-                off_cycles: track.module.off_cycles,
-                transposition: track.module.transposition,
+                on_cycles: track.module.on_cycles as _,
+                off_cycles: track.module.off_cycles as _,
+                transposition: track.module.transposition as _,
                 volume: track.module.volume,
                 panning: track.module.panning,
             }

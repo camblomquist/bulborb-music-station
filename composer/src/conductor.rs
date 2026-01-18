@@ -109,9 +109,9 @@ impl RawConductorModule {
     fn from_file(file: &mut File) -> Self {
         // Skip the first five bytes
         // These correspond to
-        // - an unused delay (i16)
-        // - an unknown i16 that is always set to 0x40
-        // - an unknown u8 that appears to always be 0
+        // - _64 an unused delay (i16)
+        // - _94 an unknown i16 that is always set to 0x40
+        // - _C4 an unknown u8 that appears to always be 0
         file.seek_relative(5).unwrap();
 
         let in_order = file.read_u8().unwrap();
