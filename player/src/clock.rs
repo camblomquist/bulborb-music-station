@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-#[allow(dead_code)]
 pub struct Clock {
     ppq: u16,
     pulse: Duration,
@@ -18,14 +17,9 @@ impl Clock {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_tempo(&mut self, tempo: u32) {
         let micros: u64 = (tempo as f64 / self.ppq as f64).floor() as u64;
         self.pulse = Duration::from_micros(micros);
-    }
-
-    pub fn pulse_time(&self) -> Duration {
-        self.pulse
     }
 
     pub fn tick(&mut self, last_cycle: Duration) {

@@ -23,9 +23,13 @@ use rand::{Rng, SeedableRng, rngs::SmallRng};
 
 const LATENCY: Duration = Duration::from_millis(15);
 
+const BEAT_INTERVAL: u32 = 60;
+const SWING_MAGNITUDE: f32 = 2.0;
+
 pub struct Player<'a> {
     synth: Arc<spin::Mutex<Synth>>,
     synth_sender: RefCell<Option<Sender<SynthEvent>>>,
+    beat_track: BeatTrack,
     conductor_tracks: Vec<ConductorTrack>,
     gesture_tracks: RefCell<Vec<Option<GestureTrack>>>,
     active_mix_tracks: RefCell<Vec<bool>>,
@@ -40,6 +44,8 @@ impl<'a> Player<'a> {
         let mut font = File::open("./data/weedsgm3.sf2").unwrap();
         let font = SoundFont::load(&mut font).unwrap();
         let _font = synth.add_font(font, true);
+
+        let beat_track = BeatTrack::new(composition.tempo, true);
 
         let conductor_tracks = composition
             .tracks
@@ -77,6 +83,7 @@ impl<'a> Player<'a> {
         Self {
             synth: Arc::new(synth.into()),
             synth_sender: None.into(),
+            beat_track,
             conductor_tracks,
             gesture_tracks,
             active_mix_tracks,
@@ -91,6 +98,11 @@ impl<'a> Player<'a> {
         let mut clock = Clock::new(self.composition.tempo, 120);
         loop {
             let start = Instant::now();
+
+            if let Some(tempo) = self.beat_track.tick() {
+                println!("Tempo: {:?}", Duration::from_micros(tempo as _));
+                clock.set_tempo(tempo);
+            }
 
             for track in &self.conductor_tracks {
                 track.tick(self);
@@ -231,6 +243,62 @@ impl<'a> Player<'a> {
         };
         let device = run_output_device(params, data_callback)?;
         Ok(device)
+    }
+}
+
+struct BeatTrack {
+    tempo: u32,
+    swing_min: u32,
+    swing_max: u32,
+    beat: u32,
+    state: RefCell<BeatTrackState>,
+}
+
+struct BeatTrackState {
+    next_beat: u32,
+    off_beat: bool,
+    swing: bool,
+}
+
+impl BeatTrack {
+    fn new(tempo: u32, start_swing: bool) -> Self {
+        let beat = BEAT_INTERVAL;
+        // JAS flips the names here but they were WRONG
+        // We also have to do the math slightly differently because we use µs/beat for tempo
+        let swing_min = tempo as f32 * 2.0 / (SWING_MAGNITUDE + 1.0);
+        let swing_max = swing_min * SWING_MAGNITUDE;
+
+        let state = BeatTrackState {
+            next_beat: 0,
+            off_beat: false,
+            swing: start_swing,
+        };
+        Self {
+            tempo,
+            swing_min: swing_min as u32,
+            swing_max: swing_max as u32,
+            beat,
+            state: state.into(),
+        }
+    }
+
+    fn tick(&self) -> Option<u32> {
+        let mut state = self.state.borrow_mut();
+        let tempo = if state.next_beat == 0 {
+            state.off_beat = !state.off_beat;
+            let tempo = match (state.swing, state.off_beat) {
+                (true, true) => self.swing_max,
+                (true, false) => self.swing_min,
+                (false, _) => self.tempo,
+            };
+            state.next_beat = self.beat;
+            Some(tempo)
+        } else {
+            None
+        };
+
+        state.next_beat = state.next_beat.saturating_sub(1);
+        tempo
     }
 }
 
