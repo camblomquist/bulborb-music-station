@@ -23,7 +23,6 @@ use rand::{Rng, SeedableRng, rngs::SmallRng};
 
 const LATENCY: Duration = Duration::from_millis(15);
 
-const BEAT_INTERVAL: u32 = 60;
 const SWING_MAGNITUDE: f32 = 2.0;
 
 pub struct Player<'a> {
@@ -45,7 +44,7 @@ impl<'a> Player<'a> {
         let font = SoundFont::load(&mut font).unwrap();
         let _font = synth.add_font(font, true);
 
-        let beat_track = BeatTrack::new(composition.tempo, true);
+        let beat_track = BeatTrack::new(composition.tempo, composition.swing_time, true);
 
         let conductor_tracks = composition
             .tracks
@@ -261,8 +260,10 @@ struct BeatTrackState {
 }
 
 impl BeatTrack {
-    fn new(tempo: u32, start_swing: bool) -> Self {
-        let beat = BEAT_INTERVAL;
+    fn new(tempo: u32, beat: u32, start_swing: bool) -> Self {
+        // JAS gets the beat from mBeatInterval but I can't find where it's set from the conductor
+        // Still, it must be set for the default does not sound correct
+
         // JAS flips the names here but they were WRONG
         // We also have to do the math slightly differently because we use µs/beat for tempo
         let swing_min = tempo as f32 * 2.0 / (SWING_MAGNITUDE + 1.0);
