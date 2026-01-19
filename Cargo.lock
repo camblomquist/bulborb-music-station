@@ -93,6 +93,7 @@ dependencies = [
  "oxisynth",
  "rand",
  "ringbuf",
+ "spin",
  "tinyaudio",
 ]
 
@@ -545,6 +546,12 @@ name = "soundfont"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a7f4cb358863e55f8f1a3882f68601360cf6c42fc53ff2fe9aea41c33e24489"
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "syn"

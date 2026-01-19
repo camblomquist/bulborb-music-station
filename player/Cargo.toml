@@ -17,3 +17,8 @@ bms-composer = { version = "0.1.0", path = "../composer" }
 [dependencies.rand]
 version = "0.9"
 features = ["small_rng"]
+
+[dependencies.spin]
+version = "0.10.0"
+default-features = false
+features = ["mutex", "spin_mutex", "std"]

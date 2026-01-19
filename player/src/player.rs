@@ -3,25 +3,29 @@ use std::{
     error::Error,
     fs::File,
     ops::ControlFlow,
+    sync::{
+        Arc,
+        mpsc::{self, Sender},
+    },
     time::{Duration, Instant},
 };
 
 use midly::{MetaMessage, TrackEvent, TrackEventKind};
 use oxisynth::{MidiEvent, SoundFont, Synth};
-use ringbuf::{
-    HeapRb,
-    traits::{Consumer, Producer, Split},
-};
 use tinyaudio::{OutputDevice, OutputDeviceParameters, run_output_device};
 
-use crate::{clock::Clock, synthext::SynthExt};
+use crate::{
+    clock::Clock,
+    synthext::{SynthEvent, SynthExt},
+};
 use bms_common::{Composition, CompositionTrack, Gesture, Timing};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
-const LATENCY: Duration = Duration::from_millis(150);
+const LATENCY: Duration = Duration::from_millis(15);
 
 pub struct Player<'a> {
-    synth: RefCell<Synth>,
+    synth: Arc<spin::Mutex<Synth>>,
+    synth_sender: RefCell<Option<Sender<SynthEvent>>>,
     conductor_tracks: Vec<ConductorTrack>,
     gesture_tracks: RefCell<Vec<Option<GestureTrack>>>,
     active_mix_tracks: RefCell<Vec<bool>>,
@@ -71,7 +75,8 @@ impl<'a> Player<'a> {
         let rng = SmallRng::from_os_rng().into();
 
         Self {
-            synth: synth.into(),
+            synth: Arc::new(synth.into()),
+            synth_sender: None.into(),
             conductor_tracks,
             gesture_tracks,
             active_mix_tracks,
@@ -81,25 +86,11 @@ impl<'a> Player<'a> {
     }
 
     pub fn play(&self) -> Result<(), Box<dyn Error>> {
-        let channels = 2;
-        let latency = LATENCY * 2;
-        let latency_frames = latency.as_secs_f64() * 44100.0;
-        let latency_samples = latency_frames as usize * channels;
-        let mut buffer = vec![0f32; latency_samples].into_boxed_slice();
-        let (_device, mut producer) = self.build_tiny_stream(buffer.len())?;
+        let _device = self.build_tiny_stream()?;
 
         let mut clock = Clock::new(self.composition.tempo, 120);
         loop {
             let start = Instant::now();
-
-            let portion = clock.pulse_time().div_duration_f64(latency);
-            let len = (latency_samples as f64 * portion) as usize;
-            let buffer = &mut buffer[..len];
-            self.synth.borrow_mut().write(buffer.as_mut());
-            let count = producer.push_slice(&buffer);
-            if count < len {
-                eprintln!("Buffer full ({count}/{len})");
-            }
 
             for track in &self.conductor_tracks {
                 track.tick(self);
@@ -107,7 +98,7 @@ impl<'a> Player<'a> {
             let mut gesture_tracks = self.gesture_tracks.borrow_mut();
             let gesture_tracks = gesture_tracks.iter_mut().filter(|track| track.is_some());
             for track in gesture_tracks {
-                if track.as_mut().unwrap().tick(self).is_break() {
+                if track.as_mut().unwrap().tick(start, self).is_break() {
                     *track = None;
                 }
             }
@@ -123,22 +114,29 @@ impl<'a> Player<'a> {
         self.rng.borrow_mut()
     }
 
-    fn send_event(&self, track_id: usize, event: TrackEvent<'a>) -> ControlFlow<()> {
+    fn send_event(
+        &self,
+        track_id: usize,
+        timestamp: Instant,
+        event: TrackEvent<'a>,
+    ) -> ControlFlow<()> {
         let active = self.active_mix_tracks.borrow()[track_id];
-        let mut synth = self.synth.borrow_mut();
+        let sender = self.synth_sender.borrow();
+        let sender = sender.as_ref().unwrap();
         match event.kind {
             TrackEventKind::Midi {
                 channel: _,
                 message,
             } if active => {
                 if let Some(event) = self.convert_message(track_id, message) {
-                    // Ignore errors
-                    let _ = synth.send_event(event);
+                    let _ = sender.send(SynthEvent { timestamp, event });
                 }
                 ControlFlow::Continue(())
             }
             TrackEventKind::Meta(MetaMessage::EndOfTrack) => {
-                synth.channel_off(track_id as u8);
+                let channel = track_id as u8;
+                let event = MidiEvent::AllNotesOff { channel };
+                let _ = sender.send(SynthEvent { timestamp, event });
                 ControlFlow::Break(())
             }
             _ => ControlFlow::Break(()),
@@ -179,7 +177,12 @@ impl<'a> Player<'a> {
     }
 
     fn stop_gesture(&self, track_id: usize) {
-        self.synth.borrow_mut().channel_off(track_id as u8);
+        let sender = self.synth_sender.borrow();
+        let sender = sender.as_ref().unwrap();
+        let timestamp = Instant::now();
+        let channel = track_id as u8;
+        let event = MidiEvent::AllNotesOff { channel };
+        let _ = sender.send(SynthEvent { timestamp, event });
         self.gesture_tracks.borrow_mut()[track_id] = None;
     }
 
@@ -191,10 +194,7 @@ impl<'a> Player<'a> {
         &self.composition.gesture_set_for_track(track_id)[gesture]
     }
 
-    fn build_tiny_stream(
-        &self,
-        buffer_capacity: usize,
-    ) -> Result<(OutputDevice, <HeapRb<f32> as Split>::Prod), Box<dyn Error>> {
+    fn build_tiny_stream(&self) -> Result<OutputDevice, Box<dyn Error>> {
         let sample_rate = 44100;
         let latency = (LATENCY.as_secs_f64() * sample_rate as f64) as usize;
         let params = OutputDeviceParameters {
@@ -203,15 +203,34 @@ impl<'a> Player<'a> {
             channel_sample_count: latency / 2,
         };
 
-        let (producer, mut consumer) = HeapRb::<f32>::new(buffer_capacity).split();
+        let (tx, rx) = mpsc::channel();
+        *self.synth_sender.borrow_mut() = Some(tx);
+
+        // We don't store the device so this doesn't create a cycle
+        let synth = self.synth.clone();
+        let mut prev = Instant::now();
         let data_callback = move |data: &mut [f32]| {
-            let count = consumer.pop_slice(data);
-            if count < data.len() {
-                eprintln!("Fell behind ({}/{})", count, data.len());
+            // How I wish I could just lock this from outside
+            let Some(mut synth) = synth.try_lock() else {
+                return;
+            };
+            let sample_rate = sample_rate as f32;
+            let mut data = data;
+            let mut samples;
+            for event in rx.try_iter() {
+                if event.timestamp <= prev {
+                    let _ = synth.send_event(event.event);
+                }
+                samples = ((event.timestamp - prev).as_secs_f32() * sample_rate) as usize;
+                samples = samples.min(data.len());
+                synth.write(&mut data[..samples]);
+                data = &mut data[samples..];
+                prev = event.timestamp;
             }
+            synth.write(data);
         };
         let device = run_output_device(params, data_callback)?;
-        Ok((device, producer))
+        Ok(device)
     }
 }
 
@@ -410,14 +429,14 @@ impl GestureTrack {
         }
     }
 
-    fn tick(&self, player: &Player) -> ControlFlow<()> {
+    fn tick(&self, timestamp: Instant, player: &Player) -> ControlFlow<()> {
         if self.state.borrow().next_event == 0 {
             let gesture = player.gesture(self.track_id, self.gesture);
-            player.send_event(self.track_id, gesture[self.state.borrow().index])?;
+            player.send_event(self.track_id, timestamp, gesture[self.state.borrow().index])?;
             while let Some(next) = self.next_event(gesture) {
                 let delta = next.delta.as_int();
                 if delta == 0 {
-                    player.send_event(self.track_id, next)?;
+                    player.send_event(self.track_id, timestamp, next)?;
                 } else {
                     self.state.borrow_mut().next_event = delta;
                     break;

@@ -25,6 +25,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn load_new_05<'a>() -> Composition<'a> {
     println!("Loading new_05");
     let bms = Bms::from_file("./data/bms/new_05.bms");
@@ -40,6 +41,7 @@ fn load_new_05<'a>() -> Composition<'a> {
     .convert()
 }
 
+#[allow(dead_code)]
 fn load_caveglass<'a>() -> Composition<'a> {
     println!("Loading caveglass_00_0");
     let bms = Bms::from_file("./data/bms/caveglass.bms");

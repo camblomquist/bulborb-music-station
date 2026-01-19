@@ -1,10 +1,15 @@
+use std::time::Instant;
+
 use oxisynth::{MidiEvent, Synth};
+
+pub struct SynthEvent {
+    pub timestamp: Instant,
+    pub event: MidiEvent,
+}
 
 pub trait SynthExt {
     fn set_volume(&mut self, channel: u8, volume: u8);
     fn set_pan(&mut self, channel: u8, pan: u8);
-
-    fn channel_off(&mut self, channel: u8);
 }
 
 impl SynthExt for Synth {
@@ -22,9 +27,5 @@ impl SynthExt for Synth {
             ctrl: 10,
             value: pan,
         });
-    }
-
-    fn channel_off(&mut self, channel: u8) {
-        let _ = self.send_event(MidiEvent::AllNotesOff { channel });
     }
 }
