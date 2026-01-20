@@ -95,6 +95,7 @@ impl<'a> Player<'a> {
         let _device = self.build_tiny_stream()?;
 
         let mut clock = Clock::new(self.composition.tempo, 120);
+        let mut timestamp = Instant::now();
         loop {
             let start = Instant::now();
 
@@ -109,11 +110,12 @@ impl<'a> Player<'a> {
             let mut gesture_tracks = self.gesture_tracks.borrow_mut();
             let gesture_tracks = gesture_tracks.iter_mut().filter(|track| track.is_some());
             for track in gesture_tracks {
-                if track.as_mut().unwrap().tick(start, self).is_break() {
+                if track.as_mut().unwrap().tick(timestamp, self).is_break() {
                     *track = None;
                 }
             }
 
+            timestamp += clock.pulse_time();
             let cycle_time = Instant::now() - start;
             clock.tick(cycle_time);
         }

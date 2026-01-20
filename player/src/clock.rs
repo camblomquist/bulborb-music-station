@@ -22,6 +22,10 @@ impl Clock {
         self.pulse = Duration::from_micros(micros);
     }
 
+    pub fn pulse_time(&self) -> Duration {
+        self.pulse
+    }
+
     pub fn tick(&mut self, last_cycle: Duration) {
         // Account for time of previous cycle in determining next pulse
         let Some(mut dur) = self.pulse.checked_sub(last_cycle) else {
