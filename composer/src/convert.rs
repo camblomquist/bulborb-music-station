@@ -9,7 +9,9 @@ use crate::{
     trackmap::{RawTrackMap, RawTrackMapEntry},
 };
 
-use bms_common::{Composition, CompositionTrack, Gesture, GestureSet, Mix, Timetable, Timing};
+use bms_common::{
+    Composition, CompositionTrack, Gesture, GestureSet, Mix, PITCH_BEND_RANGE, Timetable, Timing,
+};
 use midly::{
     MetaMessage, MidiMessage, PitchBend, TrackEvent, TrackEventKind,
     num::{u4, u7},
@@ -17,8 +19,6 @@ use midly::{
 
 const NO_NOTE: u8 = 0xFF;
 const DEFAULT_VELOCITY: u8 = 64;
-
-const PITCH_BEND_RANGE: f32 = 12.0; // Assume 12 semitone range for pitch bend
 
 // const PPQ: u16 = 120;
 
@@ -274,6 +274,15 @@ impl<'a> GestureParser<'a> {
                     let bend = (to_note as i16 - from_note as i16) as f32 / PITCH_BEND_RANGE;
                     let bend_increment = ((bend * 0x2000 as f32) / duration as f32) as u16;
 
+                    // Still treating velocity as aftertouch as it doesn't get changed over time
+                    // Treat the velocity gate as aftertouch?
+                    self.push_event(TrackEventKind::Midi {
+                        channel: self.channel,
+                        message: MidiMessage::ChannelAftertouch {
+                            vel: velocity.into(),
+                        },
+                    });
+
                     let mut bend = base_bend;
                     // This this has to include the duration?
                     // Starts with the equivalent of a gate then sweeps
@@ -288,15 +297,6 @@ impl<'a> GestureParser<'a> {
                         bend += bend_increment;
                         self.time += 1;
                     }
-
-                    // Still treating velocity as aftertouch as it doesn't get changed over time
-                    // Treat the velocity gate as aftertouch?
-                    self.push_event(TrackEventKind::Midi {
-                        channel: self.channel,
-                        message: MidiMessage::ChannelAftertouch {
-                            vel: velocity.into(),
-                        },
-                    });
 
                     // Only add the note off and reset bend if the next instruction doesn't modify this note
                     if !next_event.modifies_note() {
