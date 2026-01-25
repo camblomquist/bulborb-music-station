@@ -21,7 +21,7 @@ use crate::{
 use bms_common::{Composition, CompositionTrack, Gesture, PITCH_BEND_RANGE, Timing};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
-const LATENCY: Duration = Duration::from_millis(15);
+const LATENCY: Duration = Duration::from_millis(50);
 
 const SWING_MAGNITUDE: f32 = 2.0;
 
@@ -240,16 +240,19 @@ impl<'a> Player<'a> {
             };
             let sample_rate = sample_rate as f32;
             let mut data = data;
-            let mut samples;
             for event in rx.try_iter() {
                 if event.timestamp <= prev {
                     let _ = synth.send_event(event.event);
+                    prev = event.timestamp;
+                } else {
+                    let samples = ((event.timestamp - prev).as_secs_f32() * sample_rate) as usize;
+                    let samples = samples.min(data.len());
+                    synth.write(&mut data[..samples]);
+                    data = &mut data[samples..];
+
+                    let _ = synth.send_event(event.event);
+                    prev = event.timestamp;
                 }
-                samples = ((event.timestamp - prev).as_secs_f32() * sample_rate) as usize;
-                samples = samples.min(data.len());
-                synth.write(&mut data[..samples]);
-                data = &mut data[samples..];
-                prev = event.timestamp;
             }
             synth.write(data);
         };
