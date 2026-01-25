@@ -284,17 +284,14 @@ impl<'a> GestureParser<'a> {
                     });
 
                     let mut bend = base_bend;
-                    // This this has to include the duration?
-                    // Starts with the equivalent of a gate then sweeps
-                    // Without the final step, we don't actually reach it?
-                    for _ in 0..=duration {
+                    for _ in 0..duration {
+                        bend += bend_increment;
                         self.push_event(TrackEventKind::Midi {
                             channel: self.channel,
                             message: MidiMessage::PitchBend {
                                 bend: PitchBend(bend.into()),
                             },
                         });
-                        bend += bend_increment;
                         self.time += 1;
                     }
 
