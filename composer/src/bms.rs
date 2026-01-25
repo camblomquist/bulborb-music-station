@@ -21,6 +21,17 @@ pub enum BmsInstruction {
         velocity: u8,
         duration: Option<NonZeroU32>,
     },
+    GateOn {
+        note: u8,
+        velocity: u8,
+        duration: u32,
+    },
+    Portamento {
+        from_note: u8,
+        to_note: u8,
+        velocity: u8,
+        duration: u32,
+    },
     NoteOff {
         voice: u8,
         release: u8,
@@ -40,6 +51,14 @@ pub enum BmsInstruction {
     Finish,
 }
 
+impl BmsInstruction {
+    pub fn modifies_note(&self) -> bool {
+        match self {
+            BmsInstruction::GateOn { .. } => true,
+            _ => false,
+        }
+    }
+}
 // Directly storing the address isn't useful to us since we can't execute the bytecode
 // Instead, we have a list of subroutines we know how to translate
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,6 +78,8 @@ pub struct RawTimetable(pub Vec<u16>);
 struct BmsParser<'a> {
     data: &'a [u8],
     pos: usize,
+    prev_note: u8,
+    prev_eflags: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +117,12 @@ impl Bms {
 
 impl<'a> BmsParser<'a> {
     fn new(data: &'a [u8], pos: usize) -> Self {
-        Self { data, pos }
+        Self {
+            data,
+            pos,
+            prev_note: 0,
+            prev_eflags: 0,
+        }
     }
 
     fn parse_gesture_sets(&self) -> Vec<RawGestureSet> {
@@ -160,30 +186,45 @@ impl<'a> BmsParser<'a> {
                     panic!("NoteOn Unhandled Flag: Note from Register");
                 }
 
-                if extended_flags & 0x2 != 0 {
-                    panic!("NoteOn Unhandled Flag: Portamento");
-                }
-
-                if extended_flags & 0x1 != 0 {
-                    panic!("NoteOn Unhandled Flag: GateOn");
-                }
+                let (note, glide_note) = if extended_flags & 0x2 != 0 {
+                    (self.prev_note, Some(note))
+                } else {
+                    (note, None)
+                };
 
                 let velocity = self.read_u8();
-                if velocity & 0x80 != 0 {
-                    panic!("NoteOn Unhandled Flag: Velocity from Register");
-                }
+                let velocity = if (velocity & 0x80) == 0 {
+                    velocity
+                } else if velocity == 0x80 {
+                    // new_00 has a note with velocity 128 which should be read from Register 0
+                    // Register 0 is never set in the gesture track thus the read returns 0
+                    // This likely isn't intentional which gives us a hard choice
+                    // Follow the logic or follow the likely intention?
+                    // Due to similar weird register reads, we choose to follow intention
+                    127
+                } else {
+                    // No cave gesture should reach this but just in case
+                    panic!(
+                        "NoteOn Unhandled Flag: Velocity ({:#X}) from Register/Port",
+                        velocity
+                    );
+                };
 
                 let duration = if voice == 0 {
                     // This byte is used as a factor to get Dsp Time from Seq Time
                     // We shouldn't need to care about this?
                     self.read_u8();
 
+                    // Here is the other potential weird register read
+                    // If only one byte is pulled and has the 0x80 flag set, it's a register read
+                    // This happens quite a few times but the registers are invalid and would read junk data
+                    // Here we treat them as regular durations because they were likely intended to be
                     let count = (flags >> 3) & 0x3;
                     match count {
                         0 => panic!("NoteOn without duration"),
                         1 => NonZeroU32::new(self.read_u8() as _),
                         2 => NonZeroU32::new(self.read_u16() as _),
-                        3 => panic!("NoteOn Unhandled Flag: 24 byte sequence time"),
+                        3 => NonZeroU32::new(self.read_u24()),
                         _ => unreachable!(),
                     }
                 } else {
@@ -194,12 +235,35 @@ impl<'a> BmsParser<'a> {
                     panic!("NoteOn Unhandled Flag: Magic Register Read");
                 }
 
-                BmsInstruction::NoteOn {
-                    voice,
-                    note,
-                    velocity,
-                    duration,
-                }
+                let instruction = if let Some(glide_note) = glide_note {
+                    let duration = duration.unwrap().get();
+                    BmsInstruction::Portamento {
+                        from_note: note,
+                        to_note: glide_note,
+                        velocity,
+                        duration,
+                    }
+                } else if self.prev_eflags & 0x1 != 0 {
+                    let duration = duration.unwrap().get();
+                    BmsInstruction::GateOn {
+                        note,
+                        velocity,
+                        duration,
+                    }
+                } else {
+                    BmsInstruction::NoteOn {
+                        voice,
+                        note,
+                        velocity,
+                        duration,
+                    }
+                };
+
+                // If we have a glide note, that's the actual prev_note
+                self.prev_note = glide_note.unwrap_or(note);
+                self.prev_eflags = extended_flags;
+
+                instruction
             }
             NOTE_OFF_BEGIN..=NOTE_OFF_END => {
                 let voice = opcode & 0x7;
@@ -209,6 +273,8 @@ impl<'a> BmsParser<'a> {
                 } else {
                     0
                 };
+                self.prev_note = 0;
+                self.prev_eflags = 0;
                 BmsInstruction::NoteOff { voice, release }
             }
             CMD_WAIT8 => {
@@ -255,7 +321,11 @@ impl<'a> BmsParser<'a> {
                     _ => panic!("Unknown subroutine {:#X} at {:#X}", address, self.pos - 3),
                 }
             }
-            FINISH => BmsInstruction::Finish,
+            FINISH => {
+                self.prev_note = 0;
+                self.prev_eflags = 0;
+                BmsInstruction::Finish
+            }
             _ => panic!(
                 "unknown opcode {:#2X} at address {:#X}",
                 opcode,

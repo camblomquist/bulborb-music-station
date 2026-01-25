@@ -18,7 +18,7 @@ use crate::{
     clock::Clock,
     synthext::{SynthEvent, SynthExt},
 };
-use bms_common::{Composition, CompositionTrack, Gesture, Timing};
+use bms_common::{Composition, CompositionTrack, Gesture, PITCH_BEND_RANGE, Timing};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
 const LATENCY: Duration = Duration::from_millis(15);
@@ -56,6 +56,9 @@ impl<'a> Player<'a> {
                 // we can set these track parameters now
                 synth.set_volume(channel, track.volume);
                 synth.set_pan(channel, track.panning);
+                synth
+                    .set_pitch_wheel_sensitivity(channel, PITCH_BEND_RANGE as u8)
+                    .unwrap();
 
                 let mut initial_delay = track.initial_delay;
                 initial_delay += if let Some(unison) = track.unison_track {
@@ -164,6 +167,17 @@ impl<'a> Player<'a> {
         let channel = track_id as u8;
         let transposition = self.composition.tracks[track_id].transposition;
         match message {
+            midly::MidiMessage::ChannelAftertouch { vel } => Some(MidiEvent::ChannelPressure {
+                channel,
+                value: vel.as_int(),
+            }),
+            midly::MidiMessage::Controller { controller, value } => {
+                Some(MidiEvent::ControlChange {
+                    channel,
+                    ctrl: controller.as_int(),
+                    value: value.as_int(),
+                })
+            }
             midly::MidiMessage::NoteOff { key, vel: _ } => Some(MidiEvent::NoteOff {
                 channel,
                 key: key.as_int().saturating_add_signed(transposition),
@@ -173,13 +187,10 @@ impl<'a> Player<'a> {
                 key: key.as_int().saturating_add_signed(transposition),
                 vel: vel.as_int(),
             }),
-            midly::MidiMessage::Controller { controller, value } => {
-                Some(MidiEvent::ControlChange {
-                    channel,
-                    ctrl: controller.as_int(),
-                    value: value.as_int(),
-                })
-            }
+            midly::MidiMessage::PitchBend { bend } => Some(MidiEvent::PitchBend {
+                channel,
+                value: bend.0.as_int(),
+            }),
             _ => None,
         }
     }

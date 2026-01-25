@@ -1,5 +1,7 @@
 use midly;
 
+pub const PITCH_BEND_RANGE: f32 = 12.0; // Assume 12 semitone range for pitch bend
+
 // A single composition
 // For now just storing everything needed to play the composition
 // Can split into separate parts if it presents issues later

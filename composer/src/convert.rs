@@ -11,12 +11,14 @@ use crate::{
 
 use bms_common::{Composition, CompositionTrack, Gesture, GestureSet, Mix, Timetable, Timing};
 use midly::{
-    MetaMessage, MidiMessage, TrackEvent, TrackEventKind,
+    MetaMessage, MidiMessage, PitchBend, TrackEvent, TrackEventKind,
     num::{u4, u7},
 };
 
 const NO_NOTE: u8 = 0xFF;
-const DEFAULT_VELOCITY: u7 = u7::new(64);
+const DEFAULT_VELOCITY: u8 = 64;
+
+const PITCH_BEND_RANGE: f32 = 12.0; // Assume 12 semitone range for pitch bend
 
 // const PPQ: u16 = 120;
 
@@ -41,7 +43,7 @@ impl RawComposition {
         Composition {
             name,
             tempo,
-            swing_time: conductor.beat_interval as _,
+            beat_interval: conductor.beat_interval as _,
             skip_notes: trackmap.skip_notes,
             mixes: convert_mixes(trackmap),
             tracks: convert_tracks(conductor.tracks, trackmap),
@@ -181,8 +183,8 @@ impl<'a> GestureParser<'a> {
 
     fn parse(mut self) -> Gesture<'a> {
         let raw = self.raw.take().unwrap().0;
-        for event in raw {
-            match event {
+        for [event, next_event] in raw.array_windows() {
+            match *event {
                 BmsInstruction::NoteOn {
                     voice,
                     note,
@@ -203,27 +205,113 @@ impl<'a> GestureParser<'a> {
                     if let Some(duration) = duration {
                         self.time += duration.get();
 
+                        // Only add the note off if the next instruction doesn't modify this note
+                        if !next_event.modifies_note() {
+                            self.push_note_off(voice, None);
+                        }
+                    }
+                }
+                BmsInstruction::GateOn {
+                    note,
+                    velocity,
+                    duration,
+                } => {
+                    // A Gate can only modify an existing note on voice 0
+                    // Use the base note as the reference point
+                    let base_note = self.voice_map[0];
+
+                    // Treat the note gate as an instantaneous pitch bend
+                    let bend = (note as i16 - base_note as i16) as f32 / PITCH_BEND_RANGE;
+                    assert!(bend < 1.0);
+                    let bend = 0x2000 + (bend * 0x2000 as f32) as u16;
+
+                    self.push_event(TrackEventKind::Midi {
+                        channel: self.channel,
+                        message: MidiMessage::PitchBend {
+                            bend: PitchBend(bend.into()),
+                        },
+                    });
+                    // Treat the velocity gate as aftertouch?
+                    self.push_event(TrackEventKind::Midi {
+                        channel: self.channel,
+                        message: MidiMessage::ChannelAftertouch {
+                            vel: velocity.into(),
+                        },
+                    });
+
+                    self.time += duration;
+
+                    // Only add the note off and reset bend if the next instruction doesn't modify this note
+                    if !next_event.modifies_note() {
+                        self.push_note_off(0, None);
                         self.push_event(TrackEventKind::Midi {
                             channel: self.channel,
-                            message: MidiMessage::NoteOff {
-                                key: self.voice_map[voice].into(),
-                                vel: DEFAULT_VELOCITY,
+                            message: MidiMessage::PitchBend {
+                                bend: PitchBend(0.into()),
                             },
                         });
+                    }
+                }
+                BmsInstruction::Portamento {
+                    from_note,
+                    to_note,
+                    velocity,
+                    duration,
+                } => {
+                    // Although portamento doesn't strictly require it, it always seems to be used with a gate
+                    // There are two instances where this isn't the case that appear unintentional
+                    // We treat these as gates anyway and thus still work on the base note
+                    let base_note = self.voice_map[0];
 
-                        self.voice_map[voice] = NO_NOTE;
+                    // Even if we aren't at the base note, we need to ensure we're within range of it
+                    let total_bend = (to_note as i16 - base_note as i16) as f32 / PITCH_BEND_RANGE;
+                    assert!(total_bend < 1.0);
+
+                    // Use from_note as base bend
+                    let base_bend = (from_note as i16 - base_note as i16) as f32 / PITCH_BEND_RANGE;
+                    let base_bend = 0x2000 + (base_bend * 0x2000 as f32) as u16;
+
+                    let bend = (to_note as i16 - from_note as i16) as f32 / PITCH_BEND_RANGE;
+                    let bend_increment = ((bend * 0x2000 as f32) / duration as f32) as u16;
+
+                    let mut bend = base_bend;
+                    // This this has to include the duration?
+                    // Starts with the equivalent of a gate then sweeps
+                    // Without the final step, we don't actually reach it?
+                    for _ in 0..=duration {
+                        self.push_event(TrackEventKind::Midi {
+                            channel: self.channel,
+                            message: MidiMessage::PitchBend {
+                                bend: PitchBend(bend.into()),
+                            },
+                        });
+                        bend += bend_increment;
+                        self.time += 1;
+                    }
+
+                    // Still treating velocity as aftertouch as it doesn't get changed over time
+                    // Treat the velocity gate as aftertouch?
+                    self.push_event(TrackEventKind::Midi {
+                        channel: self.channel,
+                        message: MidiMessage::ChannelAftertouch {
+                            vel: velocity.into(),
+                        },
+                    });
+
+                    // Only add the note off and reset bend if the next instruction doesn't modify this note
+                    if !next_event.modifies_note() {
+                        self.push_note_off(0, None);
+                        self.push_event(TrackEventKind::Midi {
+                            channel: self.channel,
+                            message: MidiMessage::PitchBend {
+                                bend: PitchBend(0.into()),
+                            },
+                        });
                     }
                 }
                 BmsInstruction::NoteOff { voice, release } => {
                     let voice = voice as usize;
-                    self.push_event(TrackEventKind::Midi {
-                        channel: self.channel,
-                        message: MidiMessage::NoteOff {
-                            key: self.voice_map[voice].into(),
-                            vel: release.into(),
-                        },
-                    });
-                    self.voice_map[voice] = NO_NOTE;
+                    self.push_note_off(voice, Some(release));
                 }
                 BmsInstruction::Wait { duration } => {
                     self.time += duration as u32;
@@ -274,11 +362,15 @@ impl<'a> GestureParser<'a> {
                     }
                 }
                 BmsInstruction::Finish => {
-                    self.push_event(TrackEventKind::Meta(MetaMessage::EndOfTrack));
+                    // Likely unreachable due to windows
                     break;
                 }
             };
         }
+
+        // Because we look at the windows, the last event never gets added
+        // That last event should always be Finish so we can just add it now
+        self.push_event(TrackEventKind::Meta(MetaMessage::EndOfTrack));
 
         let mut gesture = Gesture::with_capacity(self.events.len());
         let mut prev_time = 0;
@@ -308,6 +400,18 @@ impl<'a> GestureParser<'a> {
             counter: self.counter.get(),
             kind,
         });
+    }
+
+    fn push_note_off(&mut self, voice: usize, velocity: Option<u8>) {
+        self.push_event(TrackEventKind::Midi {
+            channel: self.channel,
+            message: MidiMessage::NoteOff {
+                key: self.voice_map[voice].into(),
+                vel: velocity.unwrap_or(DEFAULT_VELOCITY).into(),
+            },
+        });
+
+        self.voice_map[voice] = NO_NOTE;
     }
 }
 
