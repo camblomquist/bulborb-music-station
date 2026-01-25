@@ -41,7 +41,7 @@ impl RawComposition {
         Composition {
             name,
             tempo,
-            swing_time: conductor.swing_time,
+            swing_time: conductor.beat_interval as _,
             skip_notes: trackmap.skip_notes,
             mixes: convert_mixes(trackmap),
             tracks: convert_tracks(conductor.tracks, trackmap),

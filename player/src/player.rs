@@ -44,7 +44,7 @@ impl<'a> Player<'a> {
         let font = SoundFont::load(&mut font).unwrap();
         let _font = synth.add_font(font, true);
 
-        let beat_track = BeatTrack::new(composition.tempo, composition.swing_time, true);
+        let beat_track = BeatTrack::new(composition.tempo, composition.beat_interval, false);
 
         let conductor_tracks = composition
             .tracks

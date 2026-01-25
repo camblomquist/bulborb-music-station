@@ -7,7 +7,7 @@ use midly;
 pub struct Composition<'a> {
     pub name: String,
     pub tempo: u32,
-    pub swing_time: u8,
+    pub beat_interval: u32,
     pub skip_notes: [bool; 8], // PikMask from Track Map
     pub mixes: Vec<Mix>,
     pub tracks: Vec<CompositionTrack>,

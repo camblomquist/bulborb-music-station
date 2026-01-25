@@ -7,7 +7,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 
 #[derive(Debug)]
 pub struct RawConductor {
-    pub swing_time: u8,
+    pub beat_interval: u8,
     pub bpm: u8,
     pub tracks: Vec<RawConductorTrack>,
 }
@@ -45,7 +45,7 @@ impl RawConductor {
 
         let mut buf = [0; 3];
         file.read_exact(&mut buf).unwrap();
-        let [swing_time, bpm, count] = buf;
+        let [beat_interval, bpm, count] = buf;
 
         file.rewind().unwrap();
 
@@ -57,7 +57,7 @@ impl RawConductor {
             .collect();
 
         Self {
-            swing_time,
+            beat_interval,
             bpm,
             tracks,
         }
