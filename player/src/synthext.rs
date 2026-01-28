@@ -1,9 +1,8 @@
-use std::time::Instant;
-
 use oxisynth::{MidiEvent, Synth};
 
+#[derive(Clone, Copy)]
 pub struct SynthEvent {
-    pub timestamp: Instant,
+    pub timestamp: u64,
     pub event: MidiEvent,
 }
 

@@ -1,17 +1,18 @@
 use std::{
-    cell::{RefCell, RefMut},
+    cell::{Cell, RefCell, RefMut},
     error::Error,
     fs::File,
     ops::ControlFlow,
     sync::{
         Arc,
+        atomic::{AtomicUsize, Ordering},
         mpsc::{self, Sender},
     },
     time::{Duration, Instant},
 };
 
 use midly::{MetaMessage, TrackEvent, TrackEventKind};
-use oxisynth::{MidiEvent, SoundFont, Synth};
+use oxisynth::{MidiEvent, SoundFont, Synth, SynthDescriptor};
 use tinyaudio::{OutputDevice, OutputDeviceParameters, run_output_device};
 
 use crate::{
@@ -33,11 +34,16 @@ pub struct Player<'a> {
     gesture_tracks: RefCell<Vec<Option<GestureTrack>>>,
     active_mix_tracks: RefCell<Vec<bool>>,
     rng: RefCell<SmallRng>,
+    timestamp: Cell<u64>,
+    sample_rate: f32,
     composition: Composition<'a>,
+    event_count: Arc<AtomicUsize>,
 }
 
 impl<'a> Player<'a> {
     pub fn new(composition: Composition<'a>) -> Self {
+        let descriptor = SynthDescriptor::default();
+        let sample_rate = descriptor.sample_rate;
         let mut synth = Synth::default();
 
         let mut font = File::open("./data/weedsgm3.sf2").unwrap();
@@ -81,6 +87,7 @@ impl<'a> Player<'a> {
         let active_mix_tracks = active_mix_tracks.into();
 
         let rng = SmallRng::from_os_rng().into();
+        let timestamp = Cell::new(0);
 
         Self {
             synth: Arc::new(synth.into()),
@@ -90,7 +97,10 @@ impl<'a> Player<'a> {
             gesture_tracks,
             active_mix_tracks,
             rng,
+            timestamp,
+            sample_rate,
             composition,
+            event_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -98,12 +108,12 @@ impl<'a> Player<'a> {
         let _device = self.build_tiny_stream()?;
 
         let mut clock = Clock::new(self.composition.tempo, 120);
-        let mut timestamp = Instant::now();
         loop {
             let start = Instant::now();
 
             if let Some(tempo) = self.beat_track.tick() {
-                println!("Tempo: {:?}", Duration::from_micros(tempo as _));
+                println!("Tempo: {:?}", Duration::from_micros(tempo as _),);
+                println!("Queue: {}", self.event_count.load(Ordering::SeqCst));
                 clock.set_tempo(tempo);
             }
 
@@ -113,12 +123,13 @@ impl<'a> Player<'a> {
             let mut gesture_tracks = self.gesture_tracks.borrow_mut();
             let gesture_tracks = gesture_tracks.iter_mut().filter(|track| track.is_some());
             for track in gesture_tracks {
-                if track.as_mut().unwrap().tick(timestamp, self).is_break() {
+                if track.as_mut().unwrap().tick(self).is_break() {
                     *track = None;
                 }
             }
 
-            timestamp += clock.pulse_time();
+            self.timestamp
+                .update(|t| t + (clock.pulse_time().as_secs_f32() * self.sample_rate) as u64);
             let cycle_time = Instant::now() - start;
             clock.tick(cycle_time);
         }
@@ -130,15 +141,12 @@ impl<'a> Player<'a> {
         self.rng.borrow_mut()
     }
 
-    fn send_event(
-        &self,
-        track_id: usize,
-        timestamp: Instant,
-        event: TrackEvent<'a>,
-    ) -> ControlFlow<()> {
+    fn send_event(&self, track_id: usize, event: TrackEvent<'a>) -> ControlFlow<()> {
+        let timestamp = self.timestamp.get();
         let active = self.active_mix_tracks.borrow()[track_id];
         let sender = self.synth_sender.borrow();
         let sender = sender.as_ref().unwrap();
+        self.event_count.fetch_add(1, Ordering::SeqCst);
         match event.kind {
             TrackEventKind::Midi {
                 channel: _,
@@ -201,13 +209,26 @@ impl<'a> Player<'a> {
     }
 
     fn stop_gesture(&self, track_id: usize) {
+        self.reset_channel(track_id);
+        self.gesture_tracks.borrow_mut()[track_id] = None;
+    }
+
+    fn reset_channel(&self, track_id: usize) {
+        let timestamp = self.timestamp.get();
+        let channel = track_id as u8;
+        let events = [
+            MidiEvent::AllNotesOff { channel },
+            MidiEvent::PitchBend {
+                channel,
+                value: 0x2000,
+            },
+        ];
         let sender = self.synth_sender.borrow();
         let sender = sender.as_ref().unwrap();
-        let timestamp = Instant::now();
-        let channel = track_id as u8;
-        let event = MidiEvent::AllNotesOff { channel };
-        let _ = sender.send(SynthEvent { timestamp, event });
-        self.gesture_tracks.borrow_mut()[track_id] = None;
+        for event in events {
+            self.event_count.fetch_add(1, Ordering::SeqCst);
+            let _ = sender.send(SynthEvent { timestamp, event });
+        }
     }
 
     fn conductor_track(&self, id: usize) -> &ConductorTrack {
@@ -219,11 +240,10 @@ impl<'a> Player<'a> {
     }
 
     fn build_tiny_stream(&self) -> Result<OutputDevice, Box<dyn Error>> {
-        let sample_rate = 44100;
-        let latency = (LATENCY.as_secs_f64() * sample_rate as f64) as usize;
+        let latency = (LATENCY.as_secs_f64() * self.sample_rate as f64) as usize;
         let params = OutputDeviceParameters {
             channels_count: 2,
-            sample_rate,
+            sample_rate: self.sample_rate as _,
             channel_sample_count: latency / 2,
         };
 
@@ -232,28 +252,40 @@ impl<'a> Player<'a> {
 
         // We don't store the device so this doesn't create a cycle
         let synth = self.synth.clone();
-        let mut prev = Instant::now();
+        let event_count = self.event_count.clone();
+        let mut timestamp = 0;
+        let mut last_event = None;
         let data_callback = move |data: &mut [f32]| {
             // How I wish I could just lock this from outside
             let Some(mut synth) = synth.try_lock() else {
                 return;
             };
-            let sample_rate = sample_rate as f32;
-            let mut data = data;
-            for event in rx.try_iter() {
-                if event.timestamp <= prev {
-                    let _ = synth.send_event(event.event);
-                    prev = event.timestamp;
-                } else {
-                    let samples = ((event.timestamp - prev).as_secs_f32() * sample_rate) as usize;
-                    let samples = samples.min(data.len());
-                    synth.write(&mut data[..samples]);
-                    data = &mut data[samples..];
 
+            let mut data = &mut data[..];
+            let end = timestamp + data.len() as u64;
+            for event in last_event.take().into_iter().chain(rx.try_iter()) {
+                if event.timestamp <= timestamp {
                     let _ = synth.send_event(event.event);
-                    prev = event.timestamp;
+                } else if event.timestamp <= end {
+                    let samples = (event.timestamp - timestamp) as usize;
+                    synth.write(&mut data[..samples]);
+                    let _ = synth.send_event(event.event);
+                    event_count.fetch_sub(1, Ordering::SeqCst);
+
+                    data = &mut data[samples..];
+                    timestamp = event.timestamp;
+                } else {
+                    event_count.fetch_sub(1, Ordering::SeqCst);
+
+                    last_event = Some(event);
+                    break;
                 }
             }
+            for _ in rx.try_iter() {
+                println!("Draining");
+                event_count.fetch_sub(1, Ordering::SeqCst);
+            }
+            timestamp += data.len() as u64;
             synth.write(data);
         };
         let device = run_output_device(params, data_callback)?;
@@ -514,14 +546,14 @@ impl GestureTrack {
         }
     }
 
-    fn tick(&self, timestamp: Instant, player: &Player) -> ControlFlow<()> {
+    fn tick(&self, player: &Player) -> ControlFlow<()> {
         if self.state.borrow().next_event == 0 {
             let gesture = player.gesture(self.track_id, self.gesture);
-            player.send_event(self.track_id, timestamp, gesture[self.state.borrow().index])?;
+            player.send_event(self.track_id, gesture[self.state.borrow().index])?;
             while let Some(next) = self.next_event(gesture) {
                 let delta = next.delta.as_int();
                 if delta == 0 {
-                    player.send_event(self.track_id, timestamp, next)?;
+                    player.send_event(self.track_id, next)?;
                 } else {
                     self.state.borrow_mut().next_event = delta;
                     break;
