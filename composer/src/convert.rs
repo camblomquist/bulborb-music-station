@@ -1,5 +1,9 @@
+#![allow(dead_code)]
+
 use std::{
     collections::BinaryHeap,
+    f32,
+    f32::consts::FRAC_PI_2 as HALF_PI,
     ops::{Index, IndexMut},
 };
 
@@ -140,6 +144,7 @@ struct GestureParser<'a> {
     raw: Option<RawGesture>,
     events: BinaryHeap<Event<'a>>,
     voice_map: [u8; 16],
+    vibrato: Vibrato,
     params: ParamSet,
     time: u32,
     counter: Counter,
@@ -175,6 +180,7 @@ impl<'a> GestureParser<'a> {
             raw: Some(raw),
             events,
             voice_map: [NO_NOTE; 16],
+            vibrato: Vibrato::default(),
             params,
             time,
             counter,
@@ -358,6 +364,12 @@ impl<'a> GestureParser<'a> {
                         }
                     }
                 }
+                BmsInstruction::VibDepth { depth } => {
+                    self.vibrato.depth = depth;
+                }
+                BmsInstruction::VibPitch { pitch } => {
+                    self.vibrato.pitch = pitch;
+                }
                 BmsInstruction::Finish => {
                     // Likely unreachable due to windows
                     break;
@@ -409,6 +421,35 @@ impl<'a> GestureParser<'a> {
         });
 
         self.voice_map[voice] = NO_NOTE;
+    }
+}
+
+struct Vibrato {
+    pitch: f32,
+    depth: f32,
+    t: f32,
+}
+
+impl Vibrato {
+    fn update(&mut self) {
+        self.t += self.pitch;
+        if self.t >= 4.0 {
+            self.t -= 4.0;
+        }
+    }
+    fn get(&mut self) -> f32 {
+        let pitch = (self.t * HALF_PI).sin() * self.depth;
+        pitch / 12.0
+    }
+}
+
+impl Default for Vibrato {
+    fn default() -> Self {
+        Self {
+            pitch: 1.0 / 18.0,
+            depth: 0.0,
+            t: 0.0,
+        }
     }
 }
 

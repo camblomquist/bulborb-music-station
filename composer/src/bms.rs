@@ -48,6 +48,12 @@ pub enum BmsInstruction {
         condition: u8,
         subroutine: BmsSubroutine,
     },
+    VibDepth {
+        depth: f32,
+    },
+    VibPitch {
+        pitch: f32,
+    },
     Finish,
 }
 
@@ -213,20 +219,21 @@ impl<'a> BmsParser<'a> {
                 let duration = if voice == 0 {
                     // This byte is used as a factor to get Dsp Time from Seq Time
                     // We shouldn't need to care about this?
-                    self.read_u8();
+                    let _speed = self.read_u8();
 
                     // Here is the other potential weird register read
                     // If only one byte is pulled and has the 0x80 flag set, it's a register read
                     // This happens quite a few times but the registers are invalid and would read junk data
                     // Here we treat them as regular durations because they were likely intended to be
                     let count = (flags >> 3) & 0x3;
-                    match count {
+                    let duration = match count {
                         0 => panic!("NoteOn without duration"),
-                        1 => NonZeroU32::new(self.read_u8() as _),
-                        2 => NonZeroU32::new(self.read_u16() as _),
-                        3 => NonZeroU32::new(self.read_u24()),
+                        1 => self.read_u8() as _,
+                        2 => self.read_u16() as _,
+                        3 => self.read_u24(),
                         _ => unreachable!(),
-                    }
+                    };
+                    NonZeroU32::new(duration)
                 } else {
                     None
                 };
@@ -309,6 +316,18 @@ impl<'a> BmsParser<'a> {
 
                 BmsInstruction::SetParam { param, value, time }
             }
+            PARAM_S16_DUR_U16 => {
+                let param = self.read_u8();
+                let param: ParamType = match param {
+                    x if x == ParamType::Volume as u8 => ParamType::Volume,
+                    _ => panic!("SetParam Unhandled Param: {}", param),
+                };
+
+                let value = self.read_i16() as f32 / 32767.0;
+                let time = NonZeroU32::new(self.read_u16() as _);
+
+                BmsInstruction::SetParam { param, value, time }
+            }
             CALL => {
                 let condition = self.read_u8();
                 let address = self.read_u24();
@@ -320,6 +339,16 @@ impl<'a> BmsParser<'a> {
                     },
                     _ => panic!("Unknown subroutine {:#X} at {:#X}", address, self.pos - 3),
                 }
+            }
+            VIBDEPTHMIDI => {
+                let depth = self.read_i16() as f32 / 393204.0;
+                BmsInstruction::VibDepth { depth }
+            }
+            VIBPITCH => {
+                let pitch = self.read_u8() as u16;
+                let pitch = pitch << 8 | pitch << 1;
+                let pitch = pitch as f32 / 294903.0;
+                BmsInstruction::VibPitch { pitch }
             }
             FINISH => {
                 self.prev_note = 0;
@@ -381,15 +410,18 @@ mod opcodes {
     }
 
     opcodes! {
-        NOTE_ON_BEGIN    = 0x00,
-        NOTE_ON_END      = 0x79,
-        CMD_WAIT8        = 0x80,
-        NOTE_OFF_BEGIN   = 0x81,
-        NOTE_OFF_END     = 0x87,
-        CMD_WAIT16       = 0x88,
-        PARAM_S16_NODUR  = 0x9C,
-        PARAM_S16_DUR_U8 = 0x9E,
-        CALL             = 0xC4,
-        FINISH           = 0xFF,
+        NOTE_ON_BEGIN     = 0x00,
+        NOTE_ON_END       = 0x79,
+        CMD_WAIT8         = 0x80,
+        NOTE_OFF_BEGIN    = 0x81,
+        NOTE_OFF_END      = 0x87,
+        CMD_WAIT16        = 0x88,
+        PARAM_S16_NODUR   = 0x9C,
+        PARAM_S16_DUR_U8  = 0x9E,
+        PARAM_S16_DUR_U16 = 0x9F,
+        CALL              = 0xC4,
+        VIBDEPTHMIDI      = 0xE6,
+        VIBPITCH          = 0xF4,
+        FINISH            = 0xFF,
     }
 }
