@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::error::Error;
+use std::{error::Error, sync::Arc, thread};
 
 use bms_common::Composition;
 use bms_composer::{
@@ -20,12 +20,16 @@ fn run() -> Result<(), Box<dyn Error>> {
     // let composition = load_new_05();
     // let composition = load_caveglass();
     // let composition = load_caverelax();
-    let composition = load_caveconc();
+    // let composition = load_caveconc();
+    let composition = load_new_01();
 
+    let composition = Arc::new(composition);
     let player = Player::new(composition);
     player.play()?;
 
-    Ok(())
+    loop {
+        thread::park();
+    }
 }
 
 fn load_new_05<'a>() -> Composition<'a> {
@@ -34,6 +38,22 @@ fn load_new_05<'a>() -> Composition<'a> {
     let conductor = RawConductor::from_file("./data/cnd/new_05_0.cnd");
     let trackmap = RawTrackMap::from_file("./data/trackmap/Totaka/trackMap_Cond_T.txt");
     let name = String::from("new_05_0.cnd");
+    RawComposition {
+        name,
+        bms,
+        conductor,
+        trackmap,
+    }
+    .convert()
+}
+
+fn load_new_01<'a>() -> Composition<'a> {
+    println!("Loading new_01");
+    let bms = Bms::from_file("./data/bms/new_01.bms");
+    let mut conductor = RawConductor::from_file("./data/cnd/new_01_0.cnd");
+    conductor.tracks[10].module.program = 65;
+    let trackmap = RawTrackMap::from_file("./data/trackmap/Totaka/trackMap_Cond_T.txt");
+    let name = String::from("new_01_0.cnd");
     RawComposition {
         name,
         bms,

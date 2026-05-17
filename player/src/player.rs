@@ -1,54 +1,58 @@
 use std::{
-    cell::{Cell, RefCell, RefMut},
+    cell::RefCell,
     error::Error,
     fs::File,
     ops::ControlFlow,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
-        mpsc::{self, Sender},
+        atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
+use atomic_refcell::{AtomicRefCell, AtomicRefMut};
 use midly::{MetaMessage, TrackEvent, TrackEventKind};
 use oxisynth::{MidiEvent, SoundFont, Synth, SynthDescriptor};
 use tinyaudio::{OutputDevice, OutputDeviceParameters, run_output_device};
 
-use crate::{
-    clock::Clock,
-    synthext::{SynthEvent, SynthExt},
-};
+use crate::{clock::Clock, synthext::SynthExt};
 use bms_common::{Composition, CompositionTrack, Gesture, PITCH_BEND_RANGE, Timing};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
+
+type AudioStream = OutputDevice;
 
 const LATENCY: Duration = Duration::from_millis(50);
 
 const SWING_MAGNITUDE: f32 = 2.0;
 
-pub struct Player<'a> {
-    synth: Arc<spin::Mutex<Synth>>,
-    synth_sender: RefCell<Option<Sender<SynthEvent>>>,
-    beat_track: BeatTrack,
-    conductor_tracks: Vec<ConductorTrack>,
-    gesture_tracks: RefCell<Vec<Option<GestureTrack>>>,
-    active_mix_tracks: RefCell<Vec<bool>>,
-    rng: RefCell<SmallRng>,
-    timestamp: Cell<u64>,
-    sample_rate: f32,
-    composition: Composition<'a>,
-    event_count: Arc<AtomicUsize>,
+pub struct Player {
+    inner: Arc<PlayerInner>,
+    stream: RefCell<Option<AudioStream>>,
 }
 
-impl<'a> Player<'a> {
-    pub fn new(composition: Composition<'a>) -> Self {
+struct PlayerInner {
+    sample_rate: f32,
+    playing: AtomicBool,
+    clock: AtomicRefCell<Clock>,
+    synth: AtomicRefCell<Synth>,
+    beat_track: BeatTrack,
+    conductor_tracks: Vec<ConductorTrack>,
+    gesture_tracks: AtomicRefCell<Vec<Option<GestureTrack>>>,
+    active_mix_tracks: AtomicRefCell<Vec<bool>>,
+    rng: AtomicRefCell<SmallRng>,
+    composition: Arc<Composition<'static>>,
+}
+
+impl Player {
+    pub fn new(composition: Arc<Composition<'static>>) -> Self {
         let descriptor = SynthDescriptor::default();
         let sample_rate = descriptor.sample_rate;
+        let playing = AtomicBool::new(false);
         let mut synth = Synth::default();
 
-        let mut font = File::open("./data/weedsgm3.sf2").unwrap();
+        let mut font = File::open("./data/SGM.sf2").unwrap();
         let font = SoundFont::load(&mut font).unwrap();
-        let _font = synth.add_font(font, true);
+        let font = synth.add_font(font, true);
 
         let beat_track = BeatTrack::new(composition.tempo, composition.beat_interval, false);
 
@@ -60,6 +64,9 @@ impl<'a> Player<'a> {
                 let channel = id as u8;
                 // Since multi-module isn't real and can't hurt me,
                 // we can set these track parameters now
+                synth
+                    .select_program(channel, font, 0, track.program)
+                    .unwrap();
                 synth.set_volume(channel, track.volume);
                 synth.set_pan(channel, track.panning);
                 synth
@@ -79,88 +86,135 @@ impl<'a> Player<'a> {
 
         let gesture_tracks = vec![None; composition.tracks.len()].into();
 
-        let mut active_mix_tracks = vec![false; composition.tracks.len()];
-        composition.mixes[0]
-            .tracks
-            .iter()
-            .for_each(|&track| active_mix_tracks[track] = true);
-        let active_mix_tracks = active_mix_tracks.into();
+        let active_mix_tracks = vec![false; composition.tracks.len()].into();
 
+        let clock = Clock::new(composition.tempo, 120).into();
+        let synth = synth.into();
         let rng = SmallRng::from_os_rng().into();
-        let timestamp = Cell::new(0);
 
-        Self {
-            synth: Arc::new(synth.into()),
-            synth_sender: None.into(),
+        let inner = PlayerInner {
+            sample_rate,
+            playing,
+            clock,
+            synth,
             beat_track,
             conductor_tracks,
             gesture_tracks,
             active_mix_tracks,
             rng,
-            timestamp,
-            sample_rate,
             composition,
-            event_count: Arc::new(AtomicUsize::new(0)),
+        }
+        .into();
+        Self {
+            inner,
+            stream: None.into(),
         }
     }
 
     pub fn play(&self) -> Result<(), Box<dyn Error>> {
-        let _device = self.build_tiny_stream()?;
+        if self.stream.borrow().is_none() {
+            let stream = self.build_stream()?;
+            *self.stream.borrow_mut() = Some(stream);
+        }
+        self.inner.set_mix(0, true);
+        self.inner.set_mix(1, true);
+        self.inner.set_mix(2, true);
+        // self.inner.set_mix(3, true);
+        // self.inner.set_mix(4, true);
 
-        let mut clock = Clock::new(self.composition.tempo, 120);
-        loop {
-            let start = Instant::now();
+        self.inner.playing.store(true, Ordering::Release);
+        Ok(())
+    }
 
-            if let Some(tempo) = self.beat_track.tick() {
-                println!("Tempo: {:?}", Duration::from_micros(tempo as _),);
-                println!("Queue: {}", self.event_count.load(Ordering::SeqCst));
-                clock.set_tempo(tempo);
+    pub fn pause(&self) -> Result<(), Box<dyn Error>> {
+        if self.stream.borrow().is_some() {
+            self.inner.playing.store(false, Ordering::Release);
+            Ok(())
+        } else {
+            Err("No active stream".into())
+        }
+    }
+
+    pub fn stop(&self) -> Result<(), Box<dyn Error>> {
+        if let Some(mut stream) = self.stream.take() {
+            stream.close();
+            Ok(())
+        } else {
+            Err("No active stream".into())
+        }
+    }
+
+    pub fn build_stream(&self) -> Result<OutputDevice, Box<dyn Error>> {
+        let sample_rate = self.inner.sample_rate;
+        let channels_count = 2;
+        let latency = (LATENCY.as_secs_f64() * sample_rate as f64) as usize;
+        let params = OutputDeviceParameters {
+            channels_count,
+            sample_rate: sample_rate as _,
+            channel_sample_count: latency / channels_count,
+        };
+
+        let player = self.inner.clone();
+        let mut start = 0;
+        let data_callback = move |data: &mut [f32]| {
+            if !player.playing.load(Ordering::Acquire) {
+                return;
             }
-
-            for track in &self.conductor_tracks {
-                track.tick(self);
+            let len = data.len();
+            let mut end = start.min(len);
+            player.synth.borrow_mut().write(&mut data[..end]);
+            while end < len {
+                let duration = player.tick();
+                end += (duration.as_secs_f32() * sample_rate) as usize * channels_count;
+                player
+                    .synth
+                    .borrow_mut()
+                    .write(&mut data[start..end.min(len)]);
+                start = end;
             }
-            let mut gesture_tracks = self.gesture_tracks.borrow_mut();
-            let gesture_tracks = gesture_tracks.iter_mut().filter(|track| track.is_some());
-            for track in gesture_tracks {
-                if track.as_mut().unwrap().tick(self).is_break() {
-                    *track = None;
-                }
-            }
+            start = start.saturating_sub(len);
+        };
+        let device = run_output_device(params, data_callback)?;
+        Ok(device)
+    }
+}
 
-            self.timestamp
-                .update(|t| t + (clock.pulse_time().as_secs_f32() * self.sample_rate) as u64);
-            let cycle_time = Instant::now() - start;
-            clock.tick(cycle_time);
+impl PlayerInner {
+    fn tick(&self) -> Duration {
+        if let Some(tempo) = self.beat_track.tick() {
+            self.clock.borrow_mut().set_tempo(tempo);
+            println!("Tempo: {:?}", Duration::from_micros(tempo as _),);
         }
 
-        // Ok(())
+        for track in &self.conductor_tracks {
+            track.tick(self);
+        }
+        let mut gesture_tracks = self.gesture_tracks.borrow_mut();
+        let gesture_tracks = gesture_tracks.iter_mut().filter(|track| track.is_some());
+        for track in gesture_tracks {
+            if track.as_mut().unwrap().tick(self).is_break() {
+                *track = None;
+            }
+        }
+        self.clock.borrow().pulse_time()
     }
 
-    fn rng(&'_ self) -> RefMut<'_, impl Rng> {
-        self.rng.borrow_mut()
-    }
-
-    fn send_event(&self, track_id: usize, event: TrackEvent<'a>) -> ControlFlow<()> {
-        let timestamp = self.timestamp.get();
+    fn send_event(&self, track_id: usize, event: TrackEvent<'_>) -> ControlFlow<()> {
         let active = self.active_mix_tracks.borrow()[track_id];
-        let sender = self.synth_sender.borrow();
-        let sender = sender.as_ref().unwrap();
-        self.event_count.fetch_add(1, Ordering::SeqCst);
         match event.kind {
             TrackEventKind::Midi {
                 channel: _,
                 message,
             } if active => {
                 if let Some(event) = self.convert_message(track_id, message) {
-                    let _ = sender.send(SynthEvent { timestamp, event });
+                    let _ = self.synth.borrow_mut().send_event(event);
                 }
                 ControlFlow::Continue(())
             }
             TrackEventKind::Meta(MetaMessage::EndOfTrack) => {
                 let channel = track_id as u8;
                 let event = MidiEvent::AllNotesOff { channel };
-                let _ = sender.send(SynthEvent { timestamp, event });
+                let _ = self.synth.borrow_mut().send_event(event);
                 ControlFlow::Break(())
             }
             _ => ControlFlow::Break(()),
@@ -214,7 +268,6 @@ impl<'a> Player<'a> {
     }
 
     fn reset_channel(&self, track_id: usize) {
-        let timestamp = self.timestamp.get();
         let channel = track_id as u8;
         let events = [
             MidiEvent::AllNotesOff { channel },
@@ -223,73 +276,30 @@ impl<'a> Player<'a> {
                 value: 0x2000,
             },
         ];
-        let sender = self.synth_sender.borrow();
-        let sender = sender.as_ref().unwrap();
+        let mut synth = self.synth.borrow_mut();
         for event in events {
-            self.event_count.fetch_add(1, Ordering::SeqCst);
-            let _ = sender.send(SynthEvent { timestamp, event });
+            let _ = synth.send_event(event);
         }
+    }
+
+    fn set_mix(&self, mix_id: usize, enabled: bool) {
+        let mut active_mix_tracks = self.active_mix_tracks.borrow_mut();
+        self.composition.mixes[mix_id]
+            .tracks
+            .iter()
+            .for_each(|&track| active_mix_tracks[track] = enabled);
     }
 
     fn conductor_track(&self, id: usize) -> &ConductorTrack {
         &self.conductor_tracks[id]
     }
 
-    fn gesture(&self, track_id: usize, gesture: usize) -> &Gesture<'a> {
+    fn gesture(&self, track_id: usize, gesture: usize) -> &Gesture<'_> {
         &self.composition.gesture_set_for_track(track_id)[gesture]
     }
 
-    fn build_tiny_stream(&self) -> Result<OutputDevice, Box<dyn Error>> {
-        let latency = (LATENCY.as_secs_f64() * self.sample_rate as f64) as usize;
-        let params = OutputDeviceParameters {
-            channels_count: 2,
-            sample_rate: self.sample_rate as _,
-            channel_sample_count: latency / 2,
-        };
-
-        let (tx, rx) = mpsc::channel();
-        *self.synth_sender.borrow_mut() = Some(tx);
-
-        // We don't store the device so this doesn't create a cycle
-        let synth = self.synth.clone();
-        let event_count = self.event_count.clone();
-        let mut timestamp = 0;
-        let mut last_event = None;
-        let data_callback = move |data: &mut [f32]| {
-            // How I wish I could just lock this from outside
-            let Some(mut synth) = synth.try_lock() else {
-                return;
-            };
-
-            let mut data = &mut data[..];
-            let end = timestamp + data.len() as u64;
-            for event in last_event.take().into_iter().chain(rx.try_iter()) {
-                if event.timestamp <= timestamp {
-                    let _ = synth.send_event(event.event);
-                } else if event.timestamp <= end {
-                    let samples = (event.timestamp - timestamp) as usize;
-                    synth.write(&mut data[..samples]);
-                    let _ = synth.send_event(event.event);
-                    event_count.fetch_sub(1, Ordering::SeqCst);
-
-                    data = &mut data[samples..];
-                    timestamp = event.timestamp;
-                } else {
-                    event_count.fetch_sub(1, Ordering::SeqCst);
-
-                    last_event = Some(event);
-                    break;
-                }
-            }
-            for _ in rx.try_iter() {
-                println!("Draining");
-                event_count.fetch_sub(1, Ordering::SeqCst);
-            }
-            timestamp += data.len() as u64;
-            synth.write(data);
-        };
-        let device = run_output_device(params, data_callback)?;
-        Ok(device)
+    fn rng(&'_ self) -> AtomicRefMut<'_, impl Rng> {
+        self.rng.borrow_mut()
     }
 }
 
@@ -298,7 +308,7 @@ struct BeatTrack {
     swing_min: u32,
     swing_max: u32,
     beat: u32,
-    state: RefCell<BeatTrackState>,
+    state: AtomicRefCell<BeatTrackState>,
 }
 
 struct BeatTrackState {
@@ -359,7 +369,7 @@ struct ConductorTrack {
     timetable: usize,
     on_cycles: u32,
     off_cycles: u32,
-    state: RefCell<ConductorTrackState>,
+    state: AtomicRefCell<ConductorTrackState>,
 }
 
 struct ConductorTrackState {
@@ -400,7 +410,7 @@ impl ConductorTrack {
         }
     }
 
-    fn tick(&self, player: &Player) {
+    fn tick(&self, player: &PlayerInner) {
         if self.state.borrow().next_event == 0 {
             let timing = self.next_timing(player);
             if timing.is_none() || !self.in_order {
@@ -435,7 +445,7 @@ impl ConductorTrack {
         state.next_cycle = state.next_cycle.saturating_sub(1);
     }
 
-    fn on_cycle(&self, timing: Timing, player: &Player) {
+    fn on_cycle(&self, timing: Timing, player: &PlayerInner) {
         player.stop_gesture(self.id);
         if !timing.cutoff() {
             let gesture = self.next_gesture(player);
@@ -446,7 +456,7 @@ impl ConductorTrack {
 
     // Get a Random Timing or the next timing in the in_order sequence
     // Returns None if in_order reached the end of the sequence
-    fn next_timing(&self, player: &Player) -> Option<Timing> {
+    fn next_timing(&self, player: &PlayerInner) -> Option<Timing> {
         let mut state = self.state.borrow_mut();
         let timetable = &player.composition.timetables[self.timetable];
         let unison_track = self
@@ -472,7 +482,7 @@ impl ConductorTrack {
         }
     }
 
-    fn next_gesture(&self, player: &Player) -> usize {
+    fn next_gesture(&self, player: &PlayerInner) -> usize {
         let gesture = if let Some(unison) = self.unison_track {
             player.conductor_track(unison).gesture()
         } else {
@@ -522,7 +532,7 @@ impl ConductorTrack {
 struct GestureTrack {
     track_id: usize,
     gesture: usize,
-    state: RefCell<GestureTrackState>,
+    state: AtomicRefCell<GestureTrackState>,
 }
 
 #[derive(Clone)]
@@ -532,7 +542,7 @@ struct GestureTrackState {
 }
 
 impl GestureTrack {
-    fn new(track_id: usize, gesture: usize, player: &Player) -> Self {
+    fn new(track_id: usize, gesture: usize, player: &PlayerInner) -> Self {
         let next_event = player.gesture(track_id, gesture)[0].delta.as_int();
 
         Self {
@@ -546,7 +556,7 @@ impl GestureTrack {
         }
     }
 
-    fn tick(&self, player: &Player) -> ControlFlow<()> {
+    fn tick(&self, player: &PlayerInner) -> ControlFlow<()> {
         if self.state.borrow().next_event == 0 {
             let gesture = player.gesture(self.track_id, self.gesture);
             player.send_event(self.track_id, gesture[self.state.borrow().index])?;
